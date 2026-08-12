@@ -1,61 +1,126 @@
-# dsh-desktop
+# DeepSeek Harness Desktop
 
 English | [中文](README.zh.md)
 
-The standalone desktop client for DeepSeek Harness: an **independent Electron application** that consumes **only the public interface of the official dsh Web UI** — its CLI (`dsh web`) and its `/api` wire contract. It imports no internal harness packages; the official repository is neither a dependency nor ever written to.
+**Use DeepSeek Harness like a desktop app — with the official Web UI, your existing sessions, and your local workspace in one focused window.**
 
-The client's window loads the **official Web UI itself** — session titles and renaming, buttons, and every interaction are the official product's, by construction. It wears the official DeepSeek Harness logo (macOS dock template icon, Windows/Linux window icon) and a standard title bar. The client's own surface is a small connection-settings window (menu → "Web UI 连接…"). Product decisions and the process model live in [docs/desktop-client-architecture.md](docs/desktop-client-architecture.md); this README covers layout, prerequisites, and commands.
+DeepSeek Harness Desktop is an independent Electron client for `dsh`. It starts or connects to the official `dsh Web UI` and displays that UI directly, so you get the complete Harness experience without keeping another browser tab open.
 
-## Runtime model
+> [!IMPORTANT]
+> This project is currently a **developer preview**. There is no downloadable installer yet; run it from source using the instructions below.
 
-The client connects to a **dsh Web UI** through its public interface — two modes, switched from the settings panel:
+![DeepSeek Harness Desktop home screen](docs/images/readme-home.png)
 
-- **Smart (default, no address set)**: the client first probes a locally running official instance on the default port (`http://127.0.0.1:3080`) and connects to it — the window and the browser then share ONE harness process, so conversations and session state sync **in real time**. Only when nothing answers does the client launch its own `dsh web --port 0` (CLI resolved in this order: `DSH_DESKTOP_DSH` → the **app-bundled `@deepseek-ai/dsh` npm package** (the official distribution, declared in `optionalDependencies`; once it is published, a plain `pnpm install` at build time bundles it — end users never run npm) → `dsh` on PATH → the conventional sibling checkouts for development). Two harness processes share the same `~/.dsh` data on disk, but only a shared process syncs live.
-- **Connect**: a Web UI address (local or remote) entered in 设置 (Settings). The client speaks only the `/api` wire contract; no local runtime is spawned.
+## Why use the desktop client?
 
-**Packaging note**: the installer bundles the app's `node_modules` (standard Electron packaging), so the bundled `dsh` ships inside the app. In the packaged app the child runs on Electron's own Node (`ELECTRON_RUN_AS_NODE`), which satisfies the harness engine range — a system Node is not required. Caveat verified during development: Electron's run-as-node ESM resolver does not follow symlinked `node_modules` (the pnpm workspace layout), so the packaged dependency tree must be a real npm-style install (what electron-builder produces); verify once at packaging time.
+- **The real Harness experience** — the app loads the official Web UI itself. Projects, conversations, tasks, models, permissions, goals, plans, skills, and slash commands behave exactly as they do in the official product.
+- **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you.
+- **Keep your work continuous** — local mode uses the same `~/.dsh` data as the `dsh` CLI and browser Web UI. Your conversations, titles, credentials, and model configuration stay together.
+- **Connect wherever your Agent runs** — use the local runtime for everyday work, or point the app at another reachable `dsh Web UI` instance.
+- **A desktop-native home for long-running work** — close the window without stopping the app, reopen it from the system tray, and keep Agent sessions separate from browser clutter.
+- **A small, auditable integration boundary** — the client uses only the public `dsh web` CLI and `/api` contract. It does not patch the official repository or import private Harness internals.
 
-**Tray-resident**: closing the window keeps the client running in the system tray (macOS menu bar / Windows taskbar area). Left-click (macOS) reopens the window; the tray menu is minimal ("显示主窗口" / "退出"). Quit only via the tray menu, the app menu, or Cmd+Q.
+## What you can do
 
-**Enhanced features**: the official General settings form flow gains a trailing "连接" block (marked 增强功能) — connection status + Web UI address, saved through the main process. The injection is heuristic and additive, styled like the official rows; if the official settings dialog cannot be detected the block is simply absent. The native connection window stays reachable via the app menu.
+Use the client for the same work you already give to an Agent:
 
-**Data**: in local mode the child runs with the **official `DSH_HOME` (`~/.dsh`, override via the `DSH_HOME` environment variable)** — the same data the `dsh` CLI and the browser Web UI use, so existing conversations, titles, credentials, and model configuration are shared. The client's own connection settings live in its own home (`~/.dsh-desktop`, override `DSH_DESKTOP_HOME`).
+- open a local project and let the Agent read or modify workspace files;
+- keep multiple conversations and find previous sessions from the sidebar;
+- monitor background tasks and long-running goals;
+- choose a model and adjust permissions before sending a request;
+- attach files, use plans, queue follow-up work, and invoke available skills or `/` commands;
+- manage your API key, Agent preset, and connection from the settings UI.
 
-## Requirements
+This interface is not a reimplementation. It is the official Web UI running inside a secure Electron window, so new official UI capabilities can reach the desktop without maintaining a second product surface.
 
-- Node `^22.19.0 || >=24.0.0` (for local mode, the `dsh` CLI runs on the system Node; a bundled runtime is a packaging follow-up)
-- macOS, Windows, or Linux — no platform-specific code paths (the window title bar, process termination, and home-directory resolution are platform-aware)
-- Local mode additionally needs the official `dsh` CLI (see above); connect mode needs a reachable Web UI instance
+## Quick start
 
-## Commands
+### Prerequisites
+
+- macOS, Windows, or Linux;
+- Node.js `^22.19.0 || >=24.0.0`;
+- [pnpm](https://pnpm.io/);
+- the official `dsh` CLI available on `PATH`, or an already running/reachable `dsh Web UI`.
+
+### Run from source
 
 ```sh
-pnpm install            # first time only (electron binary download)
-pnpm run dev            # build renderer + shell, then launch Electron
-pnpm run build:renderer # renderer only (vite)
-pnpm run build:shell    # main + preload (esbuild)
-pnpm run typecheck
-pnpm run lint
-pnpm run audit          # design-contract audit (computed styles, Playwright)
-pnpm run shot           # screenshot scenario into shots/
-pnpm run e2e            # live end-to-end smoke (needs an API key, see below)
+git clone https://github.com/bruc3van/dsh-desktop.git
+cd dsh-desktop
+pnpm install
+pnpm run dev
 ```
 
-## First run
+On launch, **Smart mode** first checks `http://127.0.0.1:3080`:
 
-1. Launch the client (`pnpm run dev`). A local `dsh web` is started automatically and the official Web UI opens in the window. If the CLI is missing or a remote Web UI is preferred, use the app menu → "Web UI 连接…".
-2. Open 设置 (Settings) in the sidebar footer, paste a `DEEPSEEK_API_KEY`, and save. The key is written through the credentials seam into data managed by the official Web UI under `DSH_HOME` — never into the desktop client's connection settings.
-3. Type a message in the composer; a session starts automatically if none is active.
+1. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process.
+2. Otherwise, the app starts its own `dsh web --port 0` process.
 
-## Scripts
+If the local CLI cannot be found, or you want to use another instance, open the application menu and choose **Web UI Connection…**.
 
-- `scripts/shot.mjs` — screenshot scenario of the official Web UI in the client window (empty state, settings, composer draft).
-- `scripts/audit.mjs` — interface boot smoke: the official UI must boot (boot manifest, sidebar, composer) without page errors.
-- `scripts/e2e.mjs` — end-to-end smoke: sends a real prompt through the official composer, verifies the streamed reply.
+### First conversation
 
-The custom renderer tree (`src/renderer/`) is retained for reference but is no longer built or loaded; `pnpm run build:renderer` still produces it.
+1. Open **Settings** at the bottom of the sidebar.
+2. Enter your `DEEPSEEK_API_KEY` and save it. The official Web UI manages the credential under `DSH_HOME`; it is not stored in the desktop connection settings.
+3. Optionally choose a default Agent preset or model.
+4. Add a project folder for workspace-aware tasks, or start a conversation directly.
+5. Describe the outcome you want and send the message.
 
-## Follow-up work
+## Two connection modes
 
-- **Official npm release sync** — blocked on the official `@deepseek-ai/dsh` npm package being published (not on the registry yet). Once it is: promote it from `optionalDependencies` to a pinned dependency, add a bump script (check latest version → update package.json → rebuild + smoke), and make the release flow "bump version + repackage". This pipeline is how official Web UI updates reach end users.
-- Packaging/distribution (electron-builder), notifications, an OS keychain provider, and voice input remain follow-up work.
+| Mode | Best for | Behavior |
+|---|---|---|
+| **Smart** (default) | Most local users | Reuses the official instance on `127.0.0.1:3080`, or starts a local `dsh web` process when needed. |
+| **Connect** | Remote machines, containers, or a manually managed runtime | Connects to the Web UI address you provide and does not start a local runtime. |
+
+Leave the Web UI address empty to return to Smart mode. Connection settings can be changed from the enhanced block in General Settings or from **Web UI Connection…** in the application menu.
+
+![Connection settings in the current desktop client](docs/images/readme-settings.png)
+
+> [!TIP]
+> For a remote instance, use a trusted network and HTTPS where available. The configured address is a direct connection target, not a relay operated by this project.
+
+## Data and privacy
+
+The desktop shell and the Harness runtime keep separate responsibilities:
+
+| Data | Default location | Owner |
+|---|---|---|
+| Conversations, credentials, model configuration, and official Harness state | `~/.dsh` | Official `dsh` runtime |
+| Desktop connection preference | `~/.dsh-desktop/settings.json` | Desktop client |
+
+Override these locations with `DSH_HOME` and `DSH_DESKTOP_HOME` respectively.
+
+The Electron window runs with context isolation and sandboxing enabled, Node integration disabled, navigation restricted to the configured Web UI origin, and external links opened in the system browser. The project never modifies the official Harness repository.
+
+## Desktop behavior
+
+- Closing the main window keeps the app available in the system tray/menu bar.
+- Reopen the window from the tray icon.
+- Quit from the tray menu, application menu, or `Cmd+Q` on macOS.
+- If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
+
+## Development
+
+```sh
+pnpm run build          # build the Electron main process and preload
+pnpm run typecheck      # TypeScript validation
+pnpm run lint           # source and script linting
+pnpm run audit          # boot and browser-surface smoke test
+pnpm run shot           # refresh screenshots in shots/
+pnpm run e2e            # send a real prompt and verify the streamed response
+```
+
+`pnpm run e2e` needs a valid API key. The retained `src/renderer/` tree is archival reference code; the production window loads the official Web UI and does not build or use that renderer.
+
+For the process model, trust boundary, and design decisions, see [Desktop client architecture](docs/desktop-client-architecture.md).
+
+## Project status
+
+The core desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, and smoke-test scripts are implemented. Before a general-user release, the project still needs signed installers, release packaging, and final integration with the official published `@deepseek-ai/dsh` package. Notifications, OS keychain integration, and voice input are also future work.
+
+Contributions and issue reports are welcome, especially around Windows/Linux behavior, remote connections, and packaging.
+
+## License
+
+[MIT](LICENSE)

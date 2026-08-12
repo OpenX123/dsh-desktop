@@ -26,6 +26,25 @@ const window = await app.firstWindow()
 // window once the carrier reaches it.
 await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
 await window.waitForTimeout(3000)
+
+// A clean DSH_HOME opens the official first-run onboarding before the main
+// surface. Advance through it so screenshots are reproducible without using
+// a developer's existing conversations or settings.
+for (let step = 0; step < 8; step += 1) {
+  const onboarding = window.locator('[class*="onboardingOverlay"]').last()
+  if (!await onboarding.isVisible().catch(() => false)) break
+  const buttons = onboarding.getByRole('button')
+  const count = await buttons.count()
+  if (count === 0) break
+  await buttons.nth(count - 1).click()
+  await window.waitForTimeout(500)
+}
+await window.waitForFunction(() => document.querySelector('[class*="onboardingOverlay"]') === null, { timeout: 30000 })
+// Completing onboarding opens the official model settings. Close that modal
+// before capturing the clean home surface; the next scenario opens settings
+// again intentionally.
+await window.keyboard.press('Escape')
+await window.waitForTimeout(800)
 await shot(window, '01-empty-state')
 
 // Open the official settings surface (sidebar footer).
@@ -36,11 +55,18 @@ await shot(window, '02-settings')
 await window.keyboard.press('Escape')
 await window.waitForTimeout(300)
 
-// Type into the composer.
-await window.locator('textarea').first().click()
-await window.keyboard.type('你好，介绍一下你自己', { delay: 12 })
-await window.waitForTimeout(300)
-await shot(window, '03-composer-draft')
+// Type into the composer when the current profile already has a workspace.
+// A completely clean profile deliberately keeps the composer disabled until
+// the user selects one, so the two privacy-safe screenshots above are enough.
+const composer = window.locator('textarea').first()
+if (await composer.isEnabled().catch(() => false)) {
+  await composer.click()
+  await window.keyboard.type('你好，介绍一下你自己', { delay: 12 })
+  await window.waitForTimeout(300)
+  await shot(window, '03-composer-draft')
+} else {
+  console.log('skipped 03-composer-draft (no workspace selected)')
+}
 
 await app.close()
 console.log('done')

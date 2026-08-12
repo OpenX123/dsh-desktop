@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "main": ".build/main.mjs",
-  "license": "BSD-3-Clause",
+  "license": "MIT",
   "scripts": {
     "build:renderer": "vite build",
     "build:shell": "esbuild src/main/index.ts --bundle --platform=node --format=esm --external:electron --outfile=.build/main.mjs && esbuild src/main/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=.build/preload.cjs",

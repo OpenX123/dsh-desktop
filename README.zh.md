@@ -1,61 +1,126 @@
-# dsh-desktop
+# DeepSeek Harness Desktop
 
 [English](README.md) | 中文
 
-DeepSeek Harness 的独立桌面客户端：一个**独立 Electron 应用**，只消费官方 **dsh Web UI 的公开接口** —— 它的 CLI（`dsh web`）与 `/api` wire 协议。它不导入任何内部 harness 包；官方仓库既不是依赖，也永远不会被写入。
+**把 DeepSeek Harness 当作桌面应用来使用：官方界面、已有会话和本地工作区，都在一个专注的窗口里。**
 
-客户端的窗口直接加载**官方 Web UI 本体**——会话标题与重命名、按钮、一切交互都是官方产品的原生行为。客户端使用官方 DeepSeek Harness 图标（macOS Dock 模板图标、Windows/Linux 窗口图标）与标准标题栏。客户端自己的表面只剩一个小的连接设置窗口（菜单 →「Web UI 连接…」）。产品决策与进程模型见 [docs/desktop-client-architecture.zh.md](docs/desktop-client-architecture.zh.md)；本 README 讲目录布局、前置条件与命令。
+DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启动或连接官方 `dsh Web UI`，并直接呈现官方界面，让你无需一直保留浏览器标签页，也能完整使用 Harness。
 
-## 运行时模型
+> [!IMPORTANT]
+> 项目目前仍是**开发者预览版**，暂未提供可直接下载的安装包。请按照下方说明从源码运行。
 
-客户端通过公开接口连接 **dsh Web UI**，两种模式可在设置中切换：
+![DeepSeek Harness Desktop 首页](docs/images/readme-home.png)
 
-- **智能（默认，未填地址）**：客户端先探测本机默认端口（`http://127.0.0.1:3080`）上是否已有官方实例在运行，有则直接连接——窗口与浏览器共享**同一个 harness 进程**，对话与会话状态**实时同步**；探测不到时才自行拉起 `dsh web --port 0`（CLI 按以下顺序解析：`DSH_DESKTOP_DSH` → **应用内置的 `@deepseek-ai/dsh` npm 包**（官方发行版，声明在 `optionalDependencies`；包发布后，构建时一次 `pnpm install` 即随应用打包——终端用户永远不需要执行 npm 命令）→ PATH 上的 `dsh` → 开发用的同级检出）。注意：两个独立 harness 进程只共享磁盘上的 `~/.dsh` 数据，只有共用同一进程才会实时同步。
-- **连接模式**：在设置中填写 Web UI 地址（本地或远程）。客户端只讲 `/api` wire 协议，不启动本地运行时。
+## 为什么值得使用？
 
-**打包说明**：安装包随附应用的 `node_modules`（标准 Electron 打包），因此内置的 `dsh` 随应用一起分发。打包后的应用里，子进程用 Electron 自带的 Node 运行（`ELECTRON_RUN_AS_NODE`），满足 harness 引擎范围——系统无需安装 Node。开发期已验证的注意事项：Electron 的 run-as-node 模式的 ESM 解析器不跟随符号链接的 `node_modules`（pnpm workspace 布局），因此打包的依赖树必须是真实 npm 布局（electron-builder 的产物即是）；打包时需验证一次。
+- **原汁原味的 Harness 能力**：应用直接加载官方 Web UI。项目、会话、任务、模型、权限、目标、计划、技能与斜杠命令都沿用官方产品行为。
+- **更少的启动步骤**：智能模式会优先复用电脑上已经运行的官方 Web UI；没有可用实例时，再替你启动 `dsh web`。
+- **工作上下文自然延续**：本地模式与 `dsh` CLI、浏览器版共用 `~/.dsh`，已有会话、标题、凭据和模型配置无需搬家。
+- **Agent 在哪里都能连接**：日常使用可以运行本地实例，也可以让桌面端连接另一台机器或容器中的 `dsh Web UI`。
+- **更适合长时间 Agent 任务**：关闭窗口不会立即退出应用，可从系统托盘重新打开，让 Agent 工作与浏览器标签页彼此独立。
+- **边界小、容易审计**：客户端只使用公开的 `dsh web` CLI 和 `/api` 协议，不修改官方仓库，也不依赖 Harness 私有内部包。
 
-**托盘常驻**：关闭窗口后客户端不退出，转入系统托盘（macOS 菜单栏 / Windows 任务栏区域）。macOS 左键点击图标重新打开窗口；托盘菜单保持精简（「显示主窗口」「退出」）。仅通过托盘菜单、应用菜单或 Cmd+Q 退出。
+## 你可以用它做什么？
 
-**增强功能**：官方「通用设置」表单流末尾会追加一个「连接」区块（带「增强功能」徽标）——连接状态 + Web UI 地址，经主进程保存。注入是启发式且纯追加，样式与官方表单一脉相承；检测不到官方设置弹窗时区块自动缺席，官方功能不受影响。原生连接窗口仍可从应用菜单打开。
+它适合承接你平时交给 Agent 的工作，例如：
 
-**数据**：本地模式下子进程使用**官方 `DSH_HOME`（`~/.dsh`，可用环境变量 `DSH_HOME` 覆盖）**——与 `dsh` CLI、浏览器端官方 Web UI 完全同一份数据，已有对话、标题、凭据与模型配置天然同步。客户端自己的连接设置放在自己的数据目录（`~/.dsh-desktop`，可用 `DSH_DESKTOP_HOME` 覆盖）。
+- 打开本地项目，让 Agent 读取或修改工作区文件；
+- 同时管理多个会话，并从侧栏找回历史任务；
+- 查看后台任务和持续时间较长的目标；
+- 发送前选择模型、调整权限范围；
+- 添加附件、使用计划、排队后续请求，调用可用技能或 `/` 命令；
+- 在设置中管理 API Key、默认 Agent 预设与连接方式。
 
-## 环境要求
+这套界面不是桌面端重新仿制的版本，而是运行在安全 Electron 窗口中的官方 Web UI。因此官方界面增加新能力时，桌面端无需长期维护另一套容易分叉的产品表面。
 
-- Node `^22.19.0 || >=24.0.0`（本地模式时 `dsh` CLI 运行在系统 Node 上；捆绑运行时为打包后续事项）
-- macOS / Windows / Linux 均支持（窗口标题栏、进程终止方式、主目录解析均按平台处理）
-- 本地模式需要官方 `dsh` CLI（见上）；连接模式需要一个可达的 Web UI 实例
+## 快速开始
 
-## 命令
+### 环境要求
+
+- macOS、Windows 或 Linux；
+- Node.js `^22.19.0 || >=24.0.0`；
+- [pnpm](https://pnpm.io/zh/)；
+- PATH 中可用的官方 `dsh` CLI，或者一个已经运行且可以访问的 `dsh Web UI`。
+
+### 从源码运行
 
 ```sh
-pnpm install            # 仅首次（Electron 二进制下载）
-pnpm run dev            # 构建 renderer + shell，然后启动 Electron
-pnpm run build:renderer # 仅 renderer（vite）
-pnpm run build:shell    # main + preload（esbuild）
-pnpm run typecheck
-pnpm run lint
-pnpm run audit          # 设计契约审计（计算样式 + Playwright）
-pnpm run shot           # 截图场景，输出到 shots/
-pnpm run e2e            # 真实端到端冒烟（需要 API key，见下）
+git clone https://github.com/bruc3van/dsh-desktop.git
+cd dsh-desktop
+pnpm install
+pnpm run dev
 ```
 
-## 首次使用
+应用启动后，默认的**智能模式**会先检查 `http://127.0.0.1:3080`：
 
-1. 启动客户端（`pnpm run dev`）。默认自动启动本地 `dsh web` 并在窗口中打开官方 Web UI；若缺少 CLI 或想连远程实例，用应用菜单 →「Web UI 连接…」。
-2. 从侧栏底部打开「设置」，粘贴 `DEEPSEEK_API_KEY` 并保存。密钥经 credentials seam 写入官方 Web UI 在 `DSH_HOME` 下管理的数据，不会进入桌面客户端的连接设置。
-3. 在 composer 输入消息；没有活动会话时会自动新建。
+1. 如果这里已经运行官方 Web UI，桌面端直接复用它。此时浏览器和桌面端共享同一个 Harness 进程，会话状态可以实时同步。
+2. 如果没有找到可用实例，桌面端会自行启动 `dsh web --port 0`。
 
-## 脚本
+如果找不到本地 CLI，或希望使用其他实例，请从应用菜单打开**「Web UI 连接…」**。
 
-- `scripts/shot.mjs` —— 对客户端窗口里的官方 Web UI 截图（空状态、设置、composer 草稿）。
-- `scripts/audit.mjs` —— 界面启动冒烟：官方 UI 必须正常启动（boot manifest、侧栏、composer）且无页面错误。
-- `scripts/e2e.mjs` —— 端到端冒烟：经官方 composer 发送真实 prompt，验证流式回复。
+### 开始第一次对话
 
-自定义 renderer（`src/renderer/`）保留在树中供参考，但不再构建、不再加载；`pnpm run build:renderer` 仍可单独产出。
+1. 点击侧栏底部的**「设置」**。
+2. 填写并保存 `DEEPSEEK_API_KEY`。凭据由官方 Web UI 管理并写入 `DSH_HOME`，不会进入桌面端的连接设置。
+3. 根据需要选择默认 Agent 预设或模型。
+4. 若任务需要读写文件，先添加一个项目文件夹；也可以直接新建会话。
+5. 描述希望 Agent 完成的结果，然后发送消息。
 
-## 后续工作
+## 两种连接方式
 
-- **官方 npm 发布同步** —— 阻塞于官方 `@deepseek-ai/dsh` npm 包正式发布（目前尚未上 registry）。发布后：把 `optionalDependencies` 中的它提升为固定版本的正式依赖，新增 bump 脚本（查官方最新版本 → 更新 package.json → 重新构建 + 冒烟），发布流程定为「版本 bump + 重新打包」。这条管线就是官方 Web UI 更新到达终端用户的通道。
-- 平台打包（electron-builder）、通知、OS Keychain provider、语音输入为后续工作。
+| 模式 | 适合场景 | 实际行为 |
+|---|---|---|
+| **智能模式**（默认） | 大多数本机用户 | 优先复用 `127.0.0.1:3080` 上的官方实例；没有实例时启动本地 `dsh web`。 |
+| **连接模式** | 远程机器、容器或自行维护的运行时 | 直接连接你填写的 Web UI 地址，不启动本地运行时。 |
+
+清空 Web UI 地址即可恢复智能模式。你可以通过通用设置里的「连接」增强区块，或应用菜单的「Web UI 连接…」修改连接。
+
+![当前桌面端的 Web UI 连接设置](docs/images/readme-settings.png)
+
+> [!TIP]
+> 连接远程实例时，请使用可信网络，并在条件允许时使用 HTTPS。这里填写的是客户端直连地址，本项目不会通过第三方中转你的请求。
+
+## 数据与隐私
+
+桌面外壳和 Harness 运行时各自管理不同的数据：
+
+| 数据 | 默认位置 | 管理方 |
+|---|---|---|
+| 会话、凭据、模型配置与其他官方 Harness 状态 | `~/.dsh` | 官方 `dsh` 运行时 |
+| 桌面端连接偏好 | `~/.dsh-desktop/settings.json` | 桌面客户端 |
+
+可以分别通过 `DSH_HOME` 和 `DSH_DESKTOP_HOME` 覆盖这两个目录。
+
+Electron 窗口已开启上下文隔离与沙箱、关闭 Node 集成，将页面导航限制在当前 Web UI 源站，并把外部链接交给系统浏览器打开。项目不会修改官方 Harness 仓库。
+
+## 桌面端行为
+
+- 关闭主窗口后，应用继续驻留在系统托盘或 macOS 菜单栏。
+- 点击托盘图标可以重新打开主窗口。
+- 可通过托盘菜单、应用菜单或 macOS 的 `Cmd+Q` 完全退出。
+- 本地 Web UI 意外退出时，客户端只会进行有限次数的重启，不会无限循环。
+
+## 开发与验证
+
+```sh
+pnpm run build          # 构建 Electron 主进程与 preload
+pnpm run typecheck      # TypeScript 类型检查
+pnpm run lint           # 检查源码与脚本
+pnpm run audit          # 启动与浏览器界面冒烟验证
+pnpm run shot           # 更新 shots/ 中的截图
+pnpm run e2e            # 发送真实请求并验证流式回复
+```
+
+`pnpm run e2e` 需要有效的 API Key。仓库中的 `src/renderer/` 仅作为历史参考保留；生产窗口直接加载官方 Web UI，不会构建或使用这套 renderer。
+
+进程模型、信任边界和设计取舍详见[桌面客户端架构](docs/desktop-client-architecture.zh.md)。
+
+## 当前状态
+
+桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护和冒烟脚本均已实现。面向普通用户正式发布前，仍需补齐签名安装包、发布打包流程，并完成与官方 `@deepseek-ai/dsh` 发布包的最终集成。系统通知、OS Keychain 与语音输入也属于后续工作。
+
+欢迎提交贡献与问题反馈，尤其是 Windows/Linux 使用、远程连接和打包方面的反馈。
+
+## 许可证
+
+[MIT](LICENSE)
