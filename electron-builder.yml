@@ -1,0 +1,52 @@
+appId: io.github.bruc3van.dsh-desktop
+productName: DeepSeek Harness Desktop
+copyright: Copyright © 2026 bruc3van
+
+directories:
+  output: release
+
+files:
+  - .build/**/*
+  - resources/**/*
+  - package.json
+  - LICENSE
+  - "!node_modules/**/*"
+
+asar: true
+npmRebuild: false
+compression: maximum
+artifactName: dsh-desktop-${version}-${os}-${arch}.${ext}
+
+mac:
+  icon: resources/icon-app.png
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+
+dmg:
+  title: DeepSeek Harness Desktop ${version}
+
+win:
+  icon: resources/icon-app.png
+  target:
+    - nsis
+    - zip
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  icon: resources/icon-app.png
+  category: Development
+  target:
+    - AppImage
+    - deb
+
+publish:
+  provider: github
+  owner: bruc3van
+  repo: dsh-desktop
+  releaseType: release

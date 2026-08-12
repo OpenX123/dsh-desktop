@@ -1,15 +1,27 @@
 {
   "name": "dsh-desktop",
-  "description": "Standalone desktop client for DeepSeek Harness: an independent Electron application consuming only the public interface of the official dsh Web UI (its CLI and its /api wire contract) — no internal harness packages",
+  "description": "DeepSeek Harness 独立桌面客户端 / Independent desktop client powered by the official dsh Web UI",
   "version": "0.0.1-rc.1",
   "private": true,
   "type": "module",
   "main": ".build/main.mjs",
+  "author": "bruc3van",
+  "homepage": "https://github.com/bruc3van/dsh-desktop#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bruc3van/dsh-desktop.git"
+  },
   "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "packageManager": "pnpm@11.16.0",
   "scripts": {
     "build:renderer": "vite build",
     "build:shell": "esbuild src/main/index.ts --bundle --platform=node --format=esm --external:electron --outfile=.build/main.mjs && esbuild src/main/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=.build/preload.cjs",
     "build": "npm run build:shell",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --publish never",
     "dev": "npm run build && electron .",
     "start": "electron .",
     "shot": "node scripts/shot.mjs",
@@ -33,13 +45,11 @@
     "@types/react-dom": "~18.3.0",
     "@vitejs/plugin-react": "^4.0.0",
     "electron": "^39.0.0",
+    "electron-builder": "26.15.3",
     "esbuild": "^0.25.0",
     "oxlint": "^1.0.0",
     "playwright-core": "^1.49.0",
     "typescript": "^6.0.3",
     "vite": "^6.0.0"
-  },
-  "optionalDependencies": {
-    "@deepseek-ai/dsh": "0.0.1-rc.1"
   }
 }

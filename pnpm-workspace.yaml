@@ -1,9 +1,16 @@
 packages:
   - .
 
+# electron-builder 26.15.3 uses ElectronDownloadCacheMode, which was added in
+# @electron/get 3.1.0, while its published range still allows incompatible 3.0.0.
+overrides:
+  "@electron/get": 3.1.0
+
 # pnpm 10+ blocks any dependency shipping an install/build script until it is
 # explicitly reviewed here. Electron needs its postinstall to fetch the
-# binary; esbuild needs its native-binary install.
+# binary; esbuild needs its native-binary install; electron-winstaller selects
+# the bundled 7-Zip executable for the current architecture.
 allowBuilds:
   electron: true
+  electron-winstaller: true
   esbuild: true

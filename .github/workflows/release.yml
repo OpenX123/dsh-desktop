@@ -1,0 +1,209 @@
+name: 发布 / Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建的已有版本 tag，例如 v0.0.1-rc.1 / Existing release tag"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: 校验版本与源码 / Validate version and source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: 检出 tag / Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: 安装 pnpm / Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+
+      - name: 安装 Node.js / Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 校验 tag 与版本 / Validate tag and version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
+            echo "无效的版本 tag / Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}" >/dev/null; then
+            echo "该引用不是已有 tag / Release ref is not an existing tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          VERSION="${RELEASE_TAG#v}"
+          PACKAGE_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "tag 与 package.json 版本不一致 / Version mismatch: tag=$VERSION package=$PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
+          PRERELEASE=false
+          [[ "$VERSION" == *-* ]] && PRERELEASE=true
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: 安装依赖 / Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查 / Typecheck
+        run: pnpm run typecheck
+
+      - name: 代码检查 / Lint
+        run: pnpm run lint
+
+      - name: 构建主进程 / Build shell
+        run: pnpm run build
+
+  build:
+    name: 构建 ${{ matrix.name }} / Build ${{ matrix.name }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Universal
+            os: macos-latest
+            command: pnpm exec electron-builder --mac dmg zip --universal --publish never
+          - name: Windows x64
+            os: windows-latest
+            command: pnpm exec electron-builder --win nsis zip --x64 --publish never
+          - name: Linux x64
+            os: ubuntu-latest
+            command: pnpm exec electron-builder --linux AppImage deb --x64 --publish never
+
+    steps:
+      - name: 检出 tag / Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - name: 安装 pnpm / Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+
+      - name: 安装 Node.js / Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖 / Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建应用 / Build application
+        run: pnpm run build
+
+      - name: 生成安装包 / Package application
+        run: ${{ matrix.command }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: 上传构建产物 / Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsh-desktop-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/*.yml
+            !release/builder-debug.yml
+            !release/builder-effective-config.yaml
+
+  release:
+    name: 创建 GitHub Release / Create GitHub Release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: 下载全部产物 / Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成 SHA-256 校验文件 / Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: 创建或更新 Release / Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<'EOF'
+          ## 下载说明
+
+          本版本由 GitHub Actions 从对应 tag 自动构建。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请使用 `SHA256SUMS.txt` 校验下载文件。
+
+          ## Download notes
+
+          This release was built automatically from the matching tag. Packages are currently unsigned, so the operating system may show a security warning on first launch. Use `SHA256SUMS.txt` to verify downloads.
+          EOF
+
+          mapfile -d '' FILES < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber
+          else
+            FLAGS=(--verify-tag --title "DeepSeek Harness Desktop $RELEASE_TAG" --notes-file release-notes.md)
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              FLAGS+=(--prerelease)
+            else
+              FLAGS+=(--latest)
+            fi
+            gh release create "$RELEASE_TAG" "${FILES[@]}" "${FLAGS[@]}"
+          fi
