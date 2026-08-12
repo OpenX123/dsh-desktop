@@ -31,6 +31,33 @@ check('sidebar rendered', await window.getByRole('button', { name: '设置' }).f
 check('composer rendered', await window.locator('textarea').first().isVisible().catch(() => false), 'textarea')
 check('session list seat', (await window.getByRole('button', { name: '新建会话' }).count()) > 0, '新建会话 button')
 
+// The native connection page is security-sensitive and previously regressed
+// when its CSP blocked its own script. Verify that it is live behind an
+// unguessable path and that the same loopback origin rejects the public path.
+const settingsPagePromise = app.waitForEvent('window')
+await window.evaluate(() => { window.desktop.openConnectionSettings() })
+const settingsPage = await settingsPagePromise
+const settingsErrors = []
+settingsPage.on('console', message => {
+  if (message.type() === 'error') settingsErrors.push(message.text())
+})
+await settingsPage.waitForFunction(() => document.querySelector('#status')?.textContent !== '读取状态…')
+const settingsUrl = new URL(settingsPage.url())
+check('private settings path', settingsUrl.pathname.length >= 49, settingsUrl.pathname)
+check('settings script executed', settingsErrors.length === 0, settingsErrors.join('; '))
+const publicSettingsResponse = await fetch(settingsUrl.origin + '/desktop/settings')
+check('public settings path rejected', publicSettingsResponse.status === 404, String(publicSettingsResponse.status))
+await settingsPage.close()
+
+// The enhanced card intentionally depends on the official settings DOM. Make
+// that black-box coupling observable so an upstream UI change cannot make the
+// feature disappear without the audit reporting it.
+await window.getByRole('button', { name: '设置' }).first().click()
+const enhancedCardVisible = await window.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3000 })
+  .then(() => true, () => false)
+check('enhanced connection card', enhancedCardVisible, '#dsh-desktop-enhance')
+await window.keyboard.press('Escape')
+
 let failures = 0
 for (const c of checks) {
   console.log((c.ok ? '✓' : '✗') + ' ' + c.name + ': ' + c.detail)

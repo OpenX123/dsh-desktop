@@ -44,7 +44,7 @@ pnpm run e2e            # live end-to-end smoke (needs an API key, see below)
 ## First run
 
 1. Launch the client (`pnpm run dev`). A local `dsh web` is started automatically and the official Web UI opens in the window. If the CLI is missing or a remote Web UI is preferred, use the app menu → "Web UI 连接…".
-2. Open 设置 (Settings) in the sidebar footer, paste a `DEEPSEEK_API_KEY`, and save. The key is written through the credentials seam into the Web UI's managed document under the client's data home — never into configuration files in plain text.
+2. Open 设置 (Settings) in the sidebar footer, paste a `DEEPSEEK_API_KEY`, and save. The key is written through the credentials seam into data managed by the official Web UI under `DSH_HOME` — never into the desktop client's connection settings.
 3. Type a message in the composer; a session starts automatically if none is active.
 
 ## Scripts
@@ -58,4 +58,4 @@ The custom renderer tree (`src/renderer/`) is retained for reference but is no l
 ## Follow-up work
 
 - **Official npm release sync** — blocked on the official `@deepseek-ai/dsh` npm package being published (not on the registry yet). Once it is: promote it from `optionalDependencies` to a pinned dependency, add a bump script (check latest version → update package.json → rebuild + smoke), and make the release flow "bump version + repackage". This pipeline is how official Web UI updates reach end users.
-- Bundled Node runtime, packaging/distribution (electron-builder), system tray and notifications, OS keychain provider, and voice input remain follow-up work.
+- Packaging/distribution (electron-builder), notifications, an OS keychain provider, and voice input remain follow-up work.

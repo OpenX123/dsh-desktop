@@ -44,7 +44,7 @@ pnpm run e2e            # 真实端到端冒烟（需要 API key，见下）
 ## 首次使用
 
 1. 启动客户端（`pnpm run dev`）。默认自动启动本地 `dsh web` 并在窗口中打开官方 Web UI；若缺少 CLI 或想连远程实例，用应用菜单 →「Web UI 连接…」。
-2. 从侧栏底部打开「设置」，粘贴 `DEEPSEEK_API_KEY` 并保存。密钥经 credentials seam 写入客户端数据目录下 Web UI 托管的管理文档，从不以明文进入配置文件。
+2. 从侧栏底部打开「设置」，粘贴 `DEEPSEEK_API_KEY` 并保存。密钥经 credentials seam 写入官方 Web UI 在 `DSH_HOME` 下管理的数据，不会进入桌面客户端的连接设置。
 3. 在 composer 输入消息；没有活动会话时会自动新建。
 
 ## 脚本
@@ -58,4 +58,4 @@ pnpm run e2e            # 真实端到端冒烟（需要 API key，见下）
 ## 后续工作
 
 - **官方 npm 发布同步** —— 阻塞于官方 `@deepseek-ai/dsh` npm 包正式发布（目前尚未上 registry）。发布后：把 `optionalDependencies` 中的它提升为固定版本的正式依赖，新增 bump 脚本（查官方最新版本 → 更新 package.json → 重新构建 + 冒烟），发布流程定为「版本 bump + 重新打包」。这条管线就是官方 Web UI 更新到达终端用户的通道。
-- 捆绑 Node 运行时、平台打包（electron-builder）、系统托盘与通知、OS Keychain provider、语音输入为后续工作。
+- 平台打包（electron-builder）、通知、OS Keychain provider、语音输入为后续工作。

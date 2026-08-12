@@ -67,8 +67,8 @@ function SettingsModal(): React.JSX.Element {
         <section className="modal-section">
           <h3 className="modal-section-title">API 密钥</h3>
           <p className="modal-desc">
-            DeepSeek 官方适配器按请求解析 <code>DEEPSEEK_API_KEY</code>。密钥保存在客户端自己的数据目录
-            （~/.dsh-desktop），不会写入配置文件明文。
+            DeepSeek 官方适配器按请求解析 <code>DEEPSEEK_API_KEY</code>。密钥由 Web UI 的 credentials seam
+            保存到官方 <code>DSH_HOME</code> 管理的数据中，不会进入客户端的连接配置。
           </p>
           <div className="key-row">
             <KeyRound size={14} strokeWidth={1.5} />
@@ -149,7 +149,7 @@ function SettingsModal(): React.JSX.Element {
         <section className="modal-section">
           <h3 className="modal-section-title">运行时</h3>
           <p className="modal-desc">
-            dsh Web UI · 版本 {host !== null ? host.version : '—'} · 数据目录 ~/.dsh-desktop
+            dsh Web UI · 版本 {host !== null ? host.version : '—'} · 官方数据目录 DSH_HOME
           </p>
         </section>
       </div>

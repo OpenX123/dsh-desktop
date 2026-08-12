@@ -16,6 +16,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
@@ -146,6 +147,8 @@ interface WebUiGeneration {
   child: ChildProcess
   /** Settles with the Web UI URL when THIS generation reports readiness. */
   ready: Promise<string>
+  /** Whether THIS generation reached readiness before it exited. */
+  readyReported: boolean
 }
 
 /**
@@ -155,17 +158,18 @@ interface WebUiGeneration {
  */
 class WebUiManager {
   private generation: WebUiGeneration | undefined
-  /** Whether any generation ever reported readiness. */
-  private everReady = false
+  /** A stop in flight must finish before another generation can be spawned. */
+  private stopping: Promise<void> | undefined
   lastError: string | null = null
 
   constructor(
     private readonly onLog: (line: string) => void,
-    private readonly onExit: (info: { everReady: boolean; code: number | null; signal: NodeJS.Signals | null }) => void,
+    private readonly onExit: (info: { wasReady: boolean; code: number | null; signal: NodeJS.Signals | null }) => void,
   ) {}
 
   /** The current generation's readiness, or a fresh spawn when none exists. */
-  ready(): Promise<string> {
+  async ready(): Promise<string> {
+    await this.stopping
     const gen = this.generation
     if (gen !== undefined) return gen.ready
     this.spawn()
@@ -181,6 +185,7 @@ class WebUiManager {
   }
 
   spawn(): void {
+    mkdirSync(childHome(), { recursive: true })
     const dsh = resolveDshCommand()
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
@@ -198,7 +203,15 @@ class WebUiManager {
       resolveReady = resolve
       rejectReady = reject
     })
-    const gen: WebUiGeneration = { child, ready }
+    const gen: WebUiGeneration = { child, ready, readyReported: false }
+    let exitReported = false
+
+    const reportExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (exitReported) return
+      exitReported = true
+      if (this.generation === gen) this.generation = undefined
+      this.onExit({ wasReady: gen.readyReported, code, signal })
+    }
 
     // Line framing across chunk boundaries: a readiness line split by the
     // pipe must not be lost (or misparsed).
@@ -212,7 +225,8 @@ class WebUiManager {
         this.onLog(line)
         const url = parseReadiness(line)
         if (url !== undefined) {
-          this.everReady = true
+          gen.readyReported = true
+          this.lastError = null
           resolveReady(url)
         }
       }
@@ -225,14 +239,12 @@ class WebUiManager {
     })
     child.on('error', (error) => {
       this.lastError = error.message
-      if (this.generation === gen) this.generation = undefined
       rejectReady(error)
-      this.onExit({ everReady: this.everReady, code: null, signal: null })
+      reportExit(null, null)
     })
     child.on('exit', (code, signal) => {
-      if (this.generation === gen) this.generation = undefined
       rejectReady(new Error('dsh web exited before ready (code=' + String(code) + ')'))
-      this.onExit({ everReady: this.everReady, code, signal })
+      reportExit(code, signal)
     })
     this.generation = gen
   }
@@ -243,36 +255,59 @@ class WebUiManager {
    * caught, so the whole process tree is terminated (taskkill /T /F).
    */
   async stop(): Promise<void> {
+    if (this.stopping !== undefined) return this.stopping
     const gen = this.generation
     if (gen === undefined || gen.child.exitCode !== null) return
-    if (process.platform === 'win32') {
-      const pid = gen.child.pid
-      if (pid === undefined) return
-      gen.child.kill()
+    const stopping = (async (): Promise<void> => {
+      if (process.platform === 'win32') {
+        const pid = gen.child.pid
+        if (pid === undefined) return
+        gen.child.kill()
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => { resolve() }, 3000)
+          gen.child.once('exit', () => { clearTimeout(timer); resolve() })
+          // Kill the tree (the harness spawns shell children that would
+          // otherwise outlive the direct child).
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {})
+        })
+        return
+      }
+      gen.child.kill('SIGTERM')
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => { resolve() }, 3000)
+        const timer = setTimeout(() => { gen.child.kill('SIGKILL'); resolve() }, 3000)
         gen.child.once('exit', () => { clearTimeout(timer); resolve() })
-        // Kill the tree (the harness spawns shell children that would
-        // otherwise outlive the direct child).
-        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {})
       })
-      return
+    })()
+    this.stopping = stopping
+    try {
+      await stopping
+    } finally {
+      if (this.stopping === stopping) this.stopping = undefined
     }
-    gen.child.kill('SIGTERM')
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => { gen.child.kill('SIGKILL'); resolve() }, 3000)
-      gen.child.once('exit', () => { clearTimeout(timer); resolve() })
-    })
   }
 }
 
 let mainWindow: BrowserWindow | null = null
+/** Whether a caller is waiting for the main window, as opposed to tray-only recovery. */
+let mainWindowRequested = false
 let settingsWindow: BrowserWindow | null = null
 let settingsServerPort = 0
+/** Bearer-like unguessable path: loopback binding alone is not authorization. */
+const settingsServerPath = '/' + randomBytes(24).toString('hex') + '/'
 let tray: Tray | null = null
 let webUi: WebUiManager | undefined
-let launchBudget = 3
+const MAX_LAUNCH_RETRIES = 3
+const INITIAL_RELAUNCH_DELAY_MS = 250
+let launchBudget = MAX_LAUNCH_RETRIES
 let quitting = false
+/** Monotonic connection intent; stale probes/readiness callbacks cannot win. */
+let connectionGeneration = 0
+
+/** Exponential delay derived from the number of retries already consumed. */
+function relaunchDelayMs(remainingRetries: number): number {
+  const attemptsConsumed = MAX_LAUNCH_RETRIES - remainingRetries
+  return INITIAL_RELAUNCH_DELAY_MS * 2 ** Math.max(0, attemptsConsumed - 1)
+}
 
 /**
  * The official Web UI's default port. In smart mode (no explicit address) the
@@ -356,7 +391,10 @@ function createWindow(url: string): void {
     },
   })
   mainWindow.once('ready-to-show', () => { mainWindow?.show() })
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    mainWindowRequested = false
+  })
   // The official Web UI is loaded; anything it tries to open elsewhere goes
   // to the system browser, and no new windows exist.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -364,8 +402,8 @@ function createWindow(url: string): void {
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
-    const current = mainWindow?.webContents.getURL()
-    if (current !== undefined && appOrigin(targetUrl) !== appOrigin(current)) {
+    const allowedTarget = currentTarget()
+    if (allowedTarget !== undefined && appOrigin(targetUrl) !== appOrigin(allowedTarget)) {
       event.preventDefault()
       openExternal(targetUrl)
     }
@@ -403,9 +441,19 @@ function openSettingsWindow(): void {
     minimizable: false,
     maximizable: false,
     backgroundColor: '#FFFFFF',
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
   })
   settingsWindow.on('closed', () => { settingsWindow = null })
-  void settingsWindow.loadURL('http://127.0.0.1:' + String(settingsServerPort) + '/')
+  settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  settingsWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    const allowed = 'http://127.0.0.1:' + String(settingsServerPort) + settingsServerPath
+    if (!targetUrl.startsWith(allowed)) event.preventDefault()
+  })
+  void settingsWindow.loadURL('http://127.0.0.1:' + String(settingsServerPort) + settingsServerPath)
 }
 
 /**
@@ -450,7 +498,19 @@ function getStatusJson(): Record<string, unknown> {
   }
 }
 
-/** The connection-settings page (self-contained; no assets). */
+/** Behavior for the loopback connection-settings page, served under the same origin. */
+const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
+  + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
+  + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
+  + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
+  + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";}catch(e){$("status").textContent="状态不可用"}}'
+  + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
+  + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
+  + '$("note").textContent=j.saved?"已保存，正在重连…":("保存失败："+(j.error||"未知错误"));'
+  + 'if(j.saved)setTimeout(()=>window.close(),900)}catch(e){$("note").textContent="保存失败："+e.message}};'
+  + '$("close").onclick=()=>window.close();refresh();'
+
+/** The connection-settings page (self-contained except for its same-origin script). */
 function settingsPageHtml(): string {
   return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
     + '<title>Web UI 连接</title>'
@@ -466,60 +526,60 @@ function settingsPageHtml(): string {
     + '<input id="url" placeholder="http://127.0.0.1:3080" spellcheck="false">'
     + '<div><button id="save" class="primary">保存并重连</button><button id="close">关闭</button></div>'
     + '<p id="note"></p>'
-    + '<script>'
-    + 'const $ = id => document.getElementById(id);'
-    + 'async function refresh(){try{const s=await(await fetch("/desktop/status")).json();'
-    + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
-    + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
-    + 'const c=await(await fetch("/desktop/settings")).json();$("url").value=c.serverUrl??"";}catch(e){$("status").textContent="状态不可用"}}'
-    + '$("save").onclick=async()=>{try{const r=await fetch("/desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
-    + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
-    + '$("note").textContent=j.saved?"已保存，正在重连…":("保存失败："+(j.error||"未知错误"));'
-    + 'if(j.saved)setTimeout(()=>window.close(),900)}catch(e){$("note").textContent="保存失败："+e.message}};'
-    + '$("close").onclick=()=>window.close();refresh();'
-    + '</script></body></html>'
+    + '<script src="desktop/settings.js"></script></body></html>'
 }
 
 /** Connect to a fixed Web UI origin: stop any local child, point the window at it. */
 function connectTo(url: string): void {
+  const generation = ++connectionGeneration
   configuredTarget = url
   probeConnected = false
+  childTarget = undefined
   if (webUi !== undefined) void webUi.stop()
-  launchWindow()
+  launchWindow(generation)
 }
 
 /** Use the local `dsh web` child (spawned on demand, awaited via readiness). */
-function startLocalRuntime(): void {
+function startLocalRuntime(generation: number): void {
+  if (generation !== connectionGeneration || quitting) return
   configuredTarget = undefined
   probeConnected = false
-  if (webUi !== undefined && childTarget === undefined && webUi.pid() === undefined) {
-    webUi.spawn()
-  }
-  launchWindow()
+  launchWindow(generation)
 }
 
 /** Smart mode: prefer a locally running official instance, else launch our own. */
 function resolveRuntime(): void {
+  const generation = ++connectionGeneration
   void probeWebUi(DEFAULT_WEB_PROBE_URL).then((probed) => {
-    if (quitting) return
+    if (quitting || generation !== connectionGeneration) return
     if (probed !== undefined) {
       configuredTarget = probed
       probeConnected = true
-      launchWindow()
+      childTarget = undefined
+      if (webUi !== undefined) void webUi.stop()
+      launchWindow(generation)
       return
     }
-    startLocalRuntime()
+    startLocalRuntime(generation)
   })
 }
 
 /** Open the window at the CURRENT target, waiting for local readiness if needed. */
-function launchWindow(): void {
+function launchWindow(generation = connectionGeneration): void {
+  if (generation !== connectionGeneration || quitting) return
+  mainWindowRequested = true
   if (configuredTarget !== undefined) {
-    if (mainWindow === null) createWindow(configuredTarget)
+    if (mainWindow === null) {
+      createWindow(configuredTarget)
+    } else if (appOrigin(mainWindow.webContents.getURL()) !== appOrigin(configuredTarget)) {
+      void mainWindow.loadURL(configuredTarget)
+    }
     return
   }
   void webUi?.ready().then((url) => {
+    if (generation !== connectionGeneration || quitting) return
     childTarget = url
+    launchBudget = MAX_LAUNCH_RETRIES
     if (mainWindow === null) createWindow(url)
     else if (configuredTarget === undefined) void mainWindow.loadURL(url)
   }, () => { /* startup failure is owned by the onExit path */ })
@@ -557,21 +617,41 @@ function installMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-/** The minimal loopback server: status + settings routes and the settings page. */
-function startSettingsServer(): number {
+/** Start the private-path loopback settings server and resolve only once bound. */
+function startSettingsServer(): Promise<number> {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://dsh.internal')
-    const pathname = url.pathname
+    if (!url.pathname.startsWith(settingsServerPath)) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('not found')
+      return
+    }
+    const pathname = '/' + url.pathname.slice(settingsServerPath.length)
     if (pathname === '/desktop/status') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
       res.end(JSON.stringify(getStatusJson()))
       return
     }
+    if (pathname === '/desktop/settings.js') {
+      res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' })
+      res.end(SETTINGS_PAGE_SCRIPT)
+      return
+    }
     if (pathname === '/desktop/settings') {
       if (req.method === 'POST') {
         let body = ''
-        req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        let bodyTooLarge = false
+        req.on('data', (chunk: Buffer) => {
+          if (bodyTooLarge) return
+          body += chunk.toString()
+          if (body.length > 16_384) {
+            bodyTooLarge = true
+            res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ saved: false, error: 'request body too large' }))
+          }
+        })
         req.on('end', () => {
+          if (bodyTooLarge) return
           try {
             const parsed = JSON.parse(body) as { serverUrl?: unknown }
             const next: ClientSettings = {
@@ -607,36 +687,50 @@ function startSettingsServer(): number {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('not found')
   })
-  server.listen(0, '127.0.0.1', () => {
-    const address = server.address()
-    settingsServerPort = typeof address === 'object' && address !== null ? address.port : 0
+  return new Promise<number>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      const address = server.address()
+      settingsServerPort = typeof address === 'object' && address !== null ? address.port : 0
+      resolve(settingsServerPort)
+    })
   })
-  return settingsServerPort
 }
 
 function boot(): void {
   const settings = loadSettings()
   webUi = new WebUiManager(
     (line) => { console.log('[dsh web] ' + line) },
-    ({ everReady, code, signal }) => {
+    ({ wasReady, code, signal }) => {
       if (quitting) return
       if (configuredTarget !== undefined) {
         // Connect/probe mode: a child exit is irrelevant (there should be none).
         return
       }
-      if (mainWindow === null && !everReady && launchBudget > 0) {
+      childTarget = undefined
+      if (mainWindow === null && launchBudget > 0) {
         launchBudget -= 1
-        console.error('[desktop] dsh web failed to start (' + String(code) + '/' + String(signal) + '); relaunching (' + String(launchBudget) + ' left)')
-        webUi?.spawn()
-        launchWindow()
-        return
-      }
-      if (mainWindow === null && everReady) {
-        // The window is closed (tray mode): restart the runtime quietly so
-        // the next window open finds a live child.
-        console.error('[desktop] dsh web exited while the window was closed; restarting quietly')
-        launchBudget = 3
-        webUi?.spawn()
+        const delayMs = relaunchDelayMs(launchBudget)
+        const generation = connectionGeneration
+        console.error('[desktop] dsh web ' + (wasReady ? 'exited' : 'failed to start') + ' (' + String(code) + '/' + String(signal)
+          + '); relaunching in ' + String(delayMs) + 'ms (' + String(launchBudget) + ' left)')
+        setTimeout(() => {
+          if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
+          webUi?.spawn()
+          if (mainWindowRequested) {
+            launchWindow(generation)
+            return
+          }
+          // Tray mode stays quiet, but still observes readiness/rejection so a
+          // failed recovery consumes the shared retry budget without an
+          // unhandled promise rejection.
+          void webUi?.ready().then((url) => {
+            if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
+            childTarget = url
+            launchBudget = MAX_LAUNCH_RETRIES
+          }, () => {})
+        }, delayMs)
         return
       }
       if (mainWindow === null) {
@@ -675,22 +769,25 @@ if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow !== null) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    if (mainWindow === null) {
+      launchWindow()
+      return
     }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
   })
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     app.setName('Harness')
     // The official logo in the macOS dock (rounded-corner tile, white glyph).
     if (process.platform === 'darwin') {
       const dockIcon = nativeImage.createFromPath(ICON_PNG)
       if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
     }
+    await startSettingsServer()
     installMenu()
     createTray()
-    startSettingsServer()
     // The official page's enhanced-features card bridges through these.
     ipcMain.handle('desktop:connection:status', () => getStatusJson())
     ipcMain.handle('desktop:connection:save', (_event, serverUrl: unknown) => {
@@ -710,6 +807,9 @@ if (!gotLock) {
     app.on('activate', () => {
       if (mainWindow === null) launchWindow()
     })
+  }).catch((error: unknown) => {
+    dialog.showErrorBox('Harness', '桌面客户端启动失败。\n' + (error instanceof Error ? error.message : String(error)))
+    app.quit()
   })
 
   app.on('window-all-closed', () => {

@@ -45,21 +45,30 @@ await window.waitForFunction(() => document.querySelector('#root')?.children.len
 await window.waitForTimeout(3000)
 await shot(window, '10-booted')
 
+// Use a per-run arithmetic result that is NOT present in the prompt. Checking
+// for a word contained in the user's own message would make this test pass
+// before the assistant produced anything.
+const left = 10_000 + Math.floor(Math.random() * 40_000)
+const right = 50_000 + Math.floor(Math.random() * 40_000)
+const expected = String(left + right)
+const prompt = `请计算 ${String(left)} 加 ${String(right)}，只回复十进制结果。`
+
 // Type a prompt and send it through the official composer.
 const composer = window.locator('textarea').first()
 await composer.click()
-await window.keyboard.type('请只回复两个字：收到', { delay: 8 })
+await window.keyboard.type(prompt, { delay: 8 })
 await window.waitForTimeout(300)
 await shot(window, '11-ready-to-send')
 await window.getByRole('button', { name: '发送消息' }).click()
 await window.waitForTimeout(800)
 await shot(window, '12-running')
 
-// Wait for the streamed reply to land in the visible text.
+// Wait for the per-run result to land. Neither operand nor the user message
+// contains the expected sum, so the user bubble cannot satisfy this check.
 let replied = false
 for (let i = 0; i < 90; i += 1) {
   await window.waitForTimeout(1000)
-  const has = await window.evaluate(() => document.body.innerText.includes('收到')).catch(() => false)
+  const has = await window.evaluate(result => document.body.innerText.includes(result), expected).catch(() => false)
   if (has) {
     replied = true
     break

@@ -4,15 +4,15 @@
 
 ## 问题
 
-`dsh` Web UI 是官方产品表面。桌面客户端被要求作为**独立第三方产品**：自己的身份、自己的数据目录、自己的前端，不依赖 web bundle——同时仍然运行真实 harness 会话。harness 包是官方仓库内部包、不对外发布，因此客户端不能依赖它们：正式发布时唯一存在的是 Web UI 的**公开接口**——`dsh` CLI 与其提供的 `/api` wire 协议。
+`dsh` Web UI 是官方产品表面。桌面客户端需要保持为**独立第三方壳层**：拥有自己的产品身份与连接设置，同时运行真实 harness 会话。因此它只组合公开产品边界：需要本地运行时便通过 `dsh` CLI 启动 Web UI，主窗口直接加载 Web UI 源站，不导入任何 harness 内部包。
 
 ## 决策
 
-客户端（本仓库 `dsh-desktop`）是一个三层结构的独立 Electron 应用：
+客户端（本仓库 `dsh-desktop`）包含三层运行时结构：
 
-- **Electron 主进程**（`src/main/`）：负责窗口、本地回环 **carrier** 服务器与 Web UI 运行时。**本地模式**下拉起官方 `dsh web --port 0`——按 `DSH_DESKTOP_DSH` → **应用内置的 `@deepseek-ai/dsh` npm 包**（声明在 `optionalDependencies`，随安装包分发，用户无需执行 npm）→ PATH → 开发用的同级检出依次解析，解析就绪行（`dsh web: <url>`）；**连接模式**下指向用户配置的 Web UI 地址。carrier 在 `/app/` 下托管客户端构建产物，把 `/api` 反向代理到 Web UI（HTTP POST 与 WebSocket upgrade，剥离浏览器标记，使 Web UI 的回环信任围栏看到的是普通客户端），并承载客户端自己的 `/desktop/*` 路由（工作区上下文、连接状态、连接设置）。子进程监护沿用旧设计：启动失败有重启预算、运行中退出弹致命对话框、退出时优雅停止（POSIX 为 SIGTERM→SIGKILL，Windows 上信号不可捕获，改用 `taskkill /T /F`）。打包后的应用里，子进程用 Electron 自带的 Node 运行（`ELECTRON_RUN_AS_NODE`），系统无需安装 Node。
-- **窗口表面**：客户端窗口直接加载 **官方 Web UI 本体**（Web UI 源站）。会话标题与重命名、按钮、一切交互都是官方产品的原生行为——客户端从不重新实现界面。客户端自己的表面只有一个小的连接设置窗口（菜单 →「Web UI 连接…」），由最小回环服务器承载（`/desktop/status`、`/desktop/settings` 与一个自包含设置页），用于选择本地/连接模式与 Web UI 地址。（本项目早期版本曾自带自定义 React renderer——`src/renderer/`，含自包含 wire 客户端与 vendor 协议 schema（`src/renderer/api/contract/`）——保留在树中供参考，不再构建、不再加载。）
-- **设置接缝**：客户端数据目录（`~/.dsh-desktop`）里的 `settings.json` 选择模式与 Web UI 地址；设置面板与启动失败页都通过 `/desktop/settings` 修改它。
+- **Electron 主进程**（`src/main/`）：负责窗口和 Web UI 运行时。**本地模式**先探测默认回环实例，否则启动 `dsh web --port 0`；**连接模式**使用配置的 Web UI 源站。命令依次从 `DSH_DESKTOP_DSH`、可选的应用内置 `@deepseek-ai/dsh`、开发用同级检出与 PATH 解析。子进程监护包含有限重试、逐 generation 就绪状态、陈旧回调拦截与优雅退出（POSIX 为 SIGTERM→SIGKILL，Windows 为 `taskkill /T /F`）。打包后通过 Electron 的 Node 模式（`ELECTRON_RUN_AS_NODE`）运行内置 CLI。
+- **窗口表面**：主窗口直接加载 **官方 Web UI 本体**。会话标题、控件和所有产品交互因此都是官方行为。preload 只暴露小型连接桥，并可在官方设置弹窗里追加一个明确标注的连接卡片。保留的 `src/renderer/` React 实现仅是归档参考；默认构建和发布窗口都不会构建或加载它。
+- **设置接缝**：带随机私密路径的最小回环页面承载原生连接窗口，并把 `settings.json` 写入 `~/.dsh-desktop`。它不是 API carrier，不代理 `/api`、WebSocket 或 renderer 资源。
 
 客户端自己的连接设置放在 `~/.dsh-desktop`（可用 `DSH_DESKTOP_HOME` 覆盖）；本地子进程使用**官方 `DSH_HOME`（`~/.dsh`）**——会话、标题、凭据、模型配置与 `dsh` CLI 和浏览器端官方 Web UI 共享。窗口使用官方 logo（macOS 模板 Dock 图标、Windows/Linux 窗口图标）与标准标题栏（官方 Web UI 自带 header）。凭据接缝按原样使用：`DEEPSEEK_API_KEY` 经官方界面的设置写入。
 
@@ -28,7 +28,7 @@
 | 已否决 | 一句话原因 |
 |---|---|
 | 用官方包组合 harness core（旧架构） | 这些包是内部未发布的——正式发布时不存在 |
-| 启动 `dsh` web profile 并从中托管客户端 UI | 客户端是独立产品：自己的 renderer、自己的数据目录、不依赖 web-app bundle |
-| renderer 直接跨源调用 `/api` | Web UI 信任围栏拒绝跨站浏览器标记；回环 carrier 以普通客户端身份代理 |
-| IPC fetch carrier | 留作后续席位；回环 HTTP/WS carrier 让 renderer 传输代码保持不变 |
+| 维护第二套生产 renderer | 会重复实现官方产品表面，并持续与官方行为漂移 |
+| 通过桌面 carrier 反代 `/api`、WebSocket 与资源 | 直接加载官方 Web UI 源站边界更小，也更忠实 |
+| 自定义 renderer 直接跨源调用 `/api` | 当前没有生产自定义 renderer；官方页面只访问自己的源站 |
 | 在 Electron 主进程内运行 harness | Electron 的 Node 落后于引擎范围，原生模块需要按 Electron ABI 重编 |
