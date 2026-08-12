@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react"],
+  "rules": {
+    "typescript/no-unused-vars": "error",
+    "typescript/unbound-method": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/no-unnecessary-condition": "error",
+    "typescript/no-dynamic-delete": "error",
+    "typescript/no-confusing-void-expression": "error",
+    "typescript/no-meaningless-void-operator": "error",
+    "typescript/require-await": "error",
+    "no-unused-vars": "error",
+    "react/jsx-no-target-blank": "error",
+    "react/no-unknown-property": "error"
+  },
+  "ignorePatterns": ["dist/**", ".build/**", "node_modules/**", "shots/**"]
+}

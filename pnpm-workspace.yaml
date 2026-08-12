@@ -1,0 +1,9 @@
+packages:
+  - .
+
+# pnpm 10+ blocks any dependency shipping an install/build script until it is
+# explicitly reviewed here. Electron needs its postinstall to fetch the
+# binary; esbuild needs its native-binary install.
+allowBuilds:
+  electron: true
+  esbuild: true

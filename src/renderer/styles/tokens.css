@@ -1,0 +1,102 @@
+/* Design tokens — the desktop client's visual system.
+ * Strictly black / white / neutral gray. No brand color.
+ * macOS system fonts; generous whitespace; 120–180ms motion. */
+
+:root {
+  /* palette */
+  --text: #242424;
+  --text-2: #6E6E69;
+  --text-3: #9C9C97;
+  --bg: #FFFFFF;
+  --sidebar: #F7F7F5;
+  --surface: #F4F4F2;
+  --surface-hover: #EEEEEA;
+  --border: #E7E7E4;
+  --border-strong: #DADAD5;
+  --btn: #1C1C1C;
+  --btn-hover: #383838;
+  --btn-disabled: #DADAD5;
+  --danger: #B3544A; /* error signaling only */
+
+  /* type */
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-title: 31px;
+  --lh-tight: 1.35;
+  --lh-normal: 1.6;
+
+  /* shape */
+  --r-s: 8px;
+  --r-m: 12px;
+  --r-composer: 26px;
+
+  /* motion */
+  --dur: 150ms;
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+  /* shadow */
+  --shadow-composer: 0 6px 24px rgba(0, 0, 0, 0.05), 0 2px 8px rgba(0, 0, 0, 0.03);
+  --shadow-pop: 0 12px 36px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-ligatures: common-ligatures;
+  overflow: hidden;
+  user-select: none;
+}
+
+input,
+textarea {
+  font-family: var(--font);
+  user-select: text;
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* Thin, quiet scrollbars. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #D4D4CF;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #C4C4BE;
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
