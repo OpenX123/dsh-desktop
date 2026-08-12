@@ -22,7 +22,7 @@ import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, Menu, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -269,6 +269,7 @@ class WebUiManager {
 let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let settingsServerPort = 0
+let tray: Tray | null = null
 let webUi: WebUiManager | undefined
 let launchBudget = 3
 let quitting = false
@@ -407,6 +408,48 @@ function openSettingsWindow(): void {
   void settingsWindow.loadURL('http://127.0.0.1:' + String(settingsServerPort) + '/')
 }
 
+/**
+ * The tray (menu-bar) seat: closing the window keeps the client running.
+ * macOS convention: left-click reopens the window, right-click shows the
+ * menu; Windows/Linux show the menu on left-click (platform default).
+ */
+function createTray(): void {
+  const icon = nativeImage.createFromPath(join(APP_DIR, 'resources', 'iconMenuTemplate.png'))
+  if (icon.isEmpty()) return
+  tray = new Tray(icon)
+  tray.setToolTip('DeepSeek Harness')
+  const showMain = (): void => {
+    if (mainWindow === null) {
+      launchWindow()
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+  const menu = Menu.buildFromTemplate([
+    { label: '显示主窗口', click: showMain },
+    { type: 'separator' },
+    { label: '退出', click: () => { app.quit() } },
+  ])
+  if (process.platform === 'darwin') {
+    tray.on('click', showMain)
+    tray.on('right-click', () => { tray?.popUpContextMenu(menu) })
+  } else {
+    tray.setContextMenu(menu)
+  }
+}
+
+/** The connection facts shared by the settings server and the IPC bridge. */
+function getStatusJson(): Record<string, unknown> {
+  return {
+    mode: probeConnected ? 'probe' : configuredTarget !== undefined ? 'connect' : 'local',
+    targetUrl: currentTarget() ?? '',
+    ...webUi?.pid() !== undefined && { childPid: webUi.pid() },
+    ...webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
+  }
+}
+
 /** The connection-settings page (self-contained; no assets). */
 function settingsPageHtml(): string {
   return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -520,14 +563,8 @@ function startSettingsServer(): number {
     const url = new URL(req.url ?? '/', 'http://dsh.internal')
     const pathname = url.pathname
     if (pathname === '/desktop/status') {
-      const body = JSON.stringify({
-        mode: probeConnected ? 'probe' : configuredTarget !== undefined ? 'connect' : 'local',
-        targetUrl: currentTarget() ?? '',
-        ...webUi?.pid() !== undefined && { childPid: webUi.pid() },
-        ...webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
-      })
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
-      res.end(body)
+      res.end(JSON.stringify(getStatusJson()))
       return
     }
     if (pathname === '/desktop/settings') {
@@ -594,6 +631,14 @@ function boot(): void {
         launchWindow()
         return
       }
+      if (mainWindow === null && everReady) {
+        // The window is closed (tray mode): restart the runtime quietly so
+        // the next window open finds a live child.
+        console.error('[desktop] dsh web exited while the window was closed; restarting quietly')
+        launchBudget = 3
+        webUi?.spawn()
+        return
+      }
       if (mainWindow === null) {
         console.error('[desktop] dsh web failed to start (' + String(code) + '/' + String(signal) + '); no relaunches left')
         const reason = webUi?.lastError
@@ -644,7 +689,23 @@ if (!gotLock) {
       if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
     }
     installMenu()
+    createTray()
     startSettingsServer()
+    // The official page's enhanced-features card bridges through these.
+    ipcMain.handle('desktop:connection:status', () => getStatusJson())
+    ipcMain.handle('desktop:connection:save', (_event, serverUrl: unknown) => {
+      try {
+        const url = typeof serverUrl === 'string' ? serverUrl.trim() : ''
+        saveSettings(typeof url === 'string' && url !== '' ? { serverUrl: url } : {})
+        const explicit = normalizeServerUrl(url)
+        if (explicit !== undefined) connectTo(explicit)
+        else resolveRuntime()
+        return { saved: true }
+      } catch (error) {
+        return { saved: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    })
+    ipcMain.on('desktop:open-connection-settings', () => { openSettingsWindow() })
     boot()
     app.on('activate', () => {
       if (mainWindow === null) launchWindow()
@@ -652,7 +713,8 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
-    app.quit()
+    // Tray-resident client: closing the last window keeps the app running.
+    // Quit happens through the tray menu, the app menu, or Cmd+Q.
   })
 
   // Quit owns the local child: the stop ladder runs before the process exits,

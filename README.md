@@ -15,6 +15,10 @@ The client connects to a **dsh Web UI** through its public interface — two mod
 
 **Packaging note**: the installer bundles the app's `node_modules` (standard Electron packaging), so the bundled `dsh` ships inside the app. In the packaged app the child runs on Electron's own Node (`ELECTRON_RUN_AS_NODE`), which satisfies the harness engine range — a system Node is not required. Caveat verified during development: Electron's run-as-node ESM resolver does not follow symlinked `node_modules` (the pnpm workspace layout), so the packaged dependency tree must be a real npm-style install (what electron-builder produces); verify once at packaging time.
 
+**Tray-resident**: closing the window keeps the client running in the system tray (macOS menu bar / Windows taskbar area). Left-click (macOS) reopens the window; the tray menu is minimal ("显示主窗口" / "退出"). Quit only via the tray menu, the app menu, or Cmd+Q.
+
+**Enhanced features**: the official General settings form flow gains a trailing "连接" block (marked 增强功能) — connection status + Web UI address, saved through the main process. The injection is heuristic and additive, styled like the official rows; if the official settings dialog cannot be detected the block is simply absent. The native connection window stays reachable via the app menu.
+
 **Data**: in local mode the child runs with the **official `DSH_HOME` (`~/.dsh`, override via the `DSH_HOME` environment variable)** — the same data the `dsh` CLI and the browser Web UI use, so existing conversations, titles, credentials, and model configuration are shared. The client's own connection settings live in its own home (`~/.dsh-desktop`, override `DSH_DESKTOP_HOME`).
 
 ## Requirements
