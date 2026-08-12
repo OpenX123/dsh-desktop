@@ -7,7 +7,7 @@
 // oxlint-disable typescript/unbound-method -- zustand store actions are
 // stable closures created once per store; selecting them is safe by design
 // (state/store.ts), the rule cannot see that.
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { Workspace } from './components/Workspace'
 import { ComposerDock } from './components/Composer'
@@ -27,13 +27,16 @@ function BootScreen(): React.JSX.Element {
           <path d="M8 17c1.2 1 2.6 1.5 4 1.5s2.8-.5 4-1.5" />
         </svg>
       </div>
-      <p className="boot-text">正在启动本地运行时…</p>
+      <p className="boot-text">正在连接 Web UI…</p>
     </div>
   )
 }
 
-/** Fatal boot surface: the harness carrier never came up. */
+/** Fatal boot surface: the Web UI never came up. */
 function ErrorScreen({ error }: { error: string | null }): React.JSX.Element {
+  const boot = useApp(state => state.boot)
+  const saveServerUrl = useApp(state => state.saveServerUrl)
+  const [serverUrl, setServerUrl] = useState('')
   return (
     <div className="boot-screen">
       <div className="boot-mark boot-mark-error">
@@ -44,6 +47,18 @@ function ErrorScreen({ error }: { error: string | null }): React.JSX.Element {
         </svg>
       </div>
       <p className="boot-text boot-text-error">{error ?? '启动失败'}</p>
+      <div className="boot-retry-row">
+        <input
+          className="key-input boot-url"
+          placeholder="Web UI 地址（留空 = 本地启动 dsh）"
+          value={serverUrl}
+          onChange={(event) => { setServerUrl(event.target.value) }}
+          onKeyDown={(event) => { if (event.key === 'Enter') void saveServerUrl(serverUrl) }}
+          spellCheck={false}
+        />
+        <button className="ghost-btn" onClick={() => { void saveServerUrl(serverUrl) }}>应用并重连</button>
+        <button className="ghost-btn" onClick={() => { boot() }}>重试</button>
+      </div>
     </div>
   )
 }

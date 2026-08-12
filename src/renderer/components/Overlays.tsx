@@ -9,11 +9,10 @@
 // (state/store.ts), the rule cannot see that.
 import { useEffect, useState } from 'react'
 import { KeyRound, ShieldAlert, X } from 'lucide-react'
-import type { AskUserQuestionOption } from '@deepseek-ai/dsh-user-interaction/types'
-import type { ModelProviderGroup } from '@deepseek-ai/dsh-host-apiproxy/api/sessions'
+import type { AskUserQuestionOption, ModelProviderGroup } from '../api/contract/types'
 import { useApp } from '../state/store'
 
-/** The settings panel: credential, default agent preset, and the model catalog. */
+/** The settings panel: credential, Web UI connection, default agent preset, and the model catalog. */
 function SettingsModal(): React.JSX.Element {
   const setSettingsOpen = useApp(state => state.setSettingsOpen)
   const api = useApp(state => state.api)
@@ -21,18 +20,23 @@ function SettingsModal(): React.JSX.Element {
   const presets = useApp(state => state.presets)
   const defaultPreset = useApp(state => state.defaultPreset)
   const setDefaultPreset = useApp(state => state.setDefaultPreset)
+  const connection = useApp(state => state.connection)
+  const refreshConnection = useApp(state => state.refreshConnection)
+  const saveServerUrl = useApp(state => state.saveServerUrl)
   const [key, setKey] = useState('')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [catalog, setCatalog] = useState<ModelProviderGroup[] | null>(null)
+  const [serverUrl, setServerUrl] = useState('')
 
-  // Host-scoped model catalog for the settings view (no session needed).
+  // Connection facts + host-scoped model catalog for the settings view.
   useEffect(() => {
+    void refreshConnection()
     if (api === null) return
     void api.llm.models({}).then(response => {
       if (response.result.ok) setCatalog(response.result.value.groups)
     })
-  }, [api])
+  }, [api, refreshConnection])
 
   const save = async (): Promise<void> => {
     if (api === null || key.trim() === '') return
@@ -83,6 +87,32 @@ function SettingsModal(): React.JSX.Element {
         </section>
 
         <section className="modal-section">
+          <h3 className="modal-section-title">Web UI 连接</h3>
+          <p className="modal-desc">
+            客户端只通过 dsh Web UI 的公开接口通信。留空 = 由客户端启动本地 <code>dsh web</code>；
+            填写地址 = 直接连接该实例（本地或远程）。
+          </p>
+          <div className="key-row">
+            <input
+              className="key-input"
+              placeholder="http://127.0.0.1:3080（留空启动本地）"
+              value={serverUrl}
+              onChange={(event) => { setServerUrl(event.target.value); setError(null) }}
+              onKeyDown={(event) => { if (event.key === 'Enter') void saveServerUrl(serverUrl) }}
+              spellCheck={false}
+            />
+            <button className="ghost-btn" onClick={() => void saveServerUrl(serverUrl)}>应用并重连</button>
+          </div>
+          <p className="modal-desc muted">
+            {connection === null
+              ? '连接状态未知。'
+              : connection.mode === 'local'
+                ? `本地 dsh web（PID ${String(connection.childPid ?? '—')}）→ ${connection.targetUrl}`
+                : `已连接 ${connection.targetUrl}`}
+          </p>
+        </section>
+
+        <section className="modal-section">
           <h3 className="modal-section-title">默认 Agent 预设</h3>
           <p className="modal-desc">新建会话使用的 agent 组合（工具集与提示词）。</p>
           <select
@@ -119,7 +149,7 @@ function SettingsModal(): React.JSX.Element {
         <section className="modal-section">
           <h3 className="modal-section-title">运行时</h3>
           <p className="modal-desc">
-            本地 harness 运行时 · 版本 {host !== null ? host.version : '—'} · 数据目录 ~/.dsh-desktop
+            dsh Web UI · 版本 {host !== null ? host.version : '—'} · 数据目录 ~/.dsh-desktop
           </p>
         </section>
       </div>

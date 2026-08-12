@@ -10,7 +10,7 @@
 // (state/store.ts), the rule cannot see that.
 import { useEffect, useRef, useState } from 'react'
 import { Bot, GitFork, Loader2, ShieldAlert, ThumbsDown, ThumbsUp, Wrench } from 'lucide-react'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionId } from '../api/contract/types'
 import type { SessionUi } from '../state/fold'
 import { useApp } from '../state/store'
 import { Markdown } from './Markdown'

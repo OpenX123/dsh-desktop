@@ -8,171 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@deepseek-ai/cordis':
-        specifier: link:../test-bruc3van/vendor/cordis
-        version: link:../test-bruc3van/vendor/cordis
-      '@deepseek-ai/cordis-plugin-include':
-        specifier: link:../test-bruc3van/vendor/include
-        version: link:../test-bruc3van/vendor/include
-      '@deepseek-ai/cordis-plugin-loader':
-        specifier: link:../test-bruc3van/vendor/loader
-        version: link:../test-bruc3van/vendor/loader
-      '@deepseek-ai/dsh-agent-presets':
-        specifier: link:../test-bruc3van/packages/preset/agent-presets
-        version: link:../test-bruc3van/packages/preset/agent-presets
-      '@deepseek-ai/dsh-agent-tool-mode':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/core/agent-tool-mode
-        version: link:../test-bruc3van/packages/core/agent-tool-mode
-      '@deepseek-ai/dsh-api-remotes':
-        specifier: link:../test-bruc3van/packages/api/remotes
-        version: link:../test-bruc3van/packages/api/remotes
-      '@deepseek-ai/dsh-app-boot':
-        specifier: link:../test-bruc3van/packages/boot/app-boot
-        version: link:../test-bruc3van/packages/boot/app-boot
-      '@deepseek-ai/dsh-attachment':
-        specifier: link:../test-bruc3van/packages/attachment/attachment
-        version: link:../test-bruc3van/packages/attachment/attachment
-      '@deepseek-ai/dsh-base':
-        specifier: link:../test-bruc3van/packages/bundle/base
-        version: link:../test-bruc3van/packages/bundle/base
-      '@deepseek-ai/dsh-bash-env':
-        specifier: link:../test-bruc3van/packages/bash/bash-env
-        version: link:../test-bruc3van/packages/bash/bash-env
-      '@deepseek-ai/dsh-client-connection':
-        specifier: link:../test-bruc3van/packages/client/connection
-        version: link:../test-bruc3van/packages/client/connection
-      '@deepseek-ai/dsh-cmdline':
-        specifier: link:../test-bruc3van/packages/boot/cmdline
-        version: link:../test-bruc3van/packages/boot/cmdline
-      '@deepseek-ai/dsh-command-compact':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/compact/command-compact
-        version: link:../test-bruc3van/packages/compact/command-compact
-      '@deepseek-ai/dsh-compact-basic':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/compact/compact-basic
-        version: link:../test-bruc3van/packages/compact/compact-basic
-      '@deepseek-ai/dsh-compact-tool-result-prune':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/compact/compact-tool-result-prune
-        version: link:../test-bruc3van/packages/compact/compact-tool-result-prune
-      '@deepseek-ai/dsh-environment':
-        specifier: link:../test-bruc3van/packages/util/environment
-        version: link:../test-bruc3van/packages/util/environment
-      '@deepseek-ai/dsh-fs-local':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/fs/fs-local
-        version: link:../test-bruc3van/packages/fs/fs-local
-      '@deepseek-ai/dsh-host-apiproxy':
-        specifier: link:../test-bruc3van/packages/host/apiproxy
-        version: link:../test-bruc3van/packages/host/apiproxy
-      '@deepseek-ai/dsh-host-directory-picker-auto':
-        specifier: link:../test-bruc3van/packages/host/directory-picker-auto
-        version: link:../test-bruc3van/packages/host/directory-picker-auto
-      '@deepseek-ai/dsh-host-webserver':
-        specifier: link:../test-bruc3van/packages/host/webserver
-        version: link:../test-bruc3van/packages/host/webserver
-      '@deepseek-ai/dsh-llm':
-        specifier: link:../test-bruc3van/packages/llm/llm
-        version: link:../test-bruc3van/packages/llm/llm
-      '@deepseek-ai/dsh-message-feedback':
-        specifier: link:../test-bruc3van/packages/feedback/message-feedback
-        version: link:../test-bruc3van/packages/feedback/message-feedback
-      '@deepseek-ai/dsh-paths':
-        specifier: link:../test-bruc3van/packages/util/paths
-        version: link:../test-bruc3van/packages/util/paths
-      '@deepseek-ai/dsh-persona':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/preset/persona
-        version: link:../test-bruc3van/packages/preset/persona
-      '@deepseek-ai/dsh-plan-mode':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/plan/plan-mode
-        version: link:../test-bruc3van/packages/plan/plan-mode
-      '@deepseek-ai/dsh-pty':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/pty/pty
-        version: link:../test-bruc3van/packages/pty/pty
-      '@deepseek-ai/dsh-pty-local':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/pty/pty-local
-        version: link:../test-bruc3van/packages/pty/pty-local
-      '@deepseek-ai/dsh-session':
-        specifier: link:../test-bruc3van/packages/core/session
-        version: link:../test-bruc3van/packages/core/session
-      '@deepseek-ai/dsh-session-projection-cache':
-        specifier: link:../test-bruc3van/packages/session/session-projection-cache
-        version: link:../test-bruc3van/packages/session/session-projection-cache
-      '@deepseek-ai/dsh-skill-local':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/skill/skill-local
-        version: link:../test-bruc3van/packages/skill/skill-local
-      '@deepseek-ai/dsh-storage':
-        specifier: link:../test-bruc3van/packages/storage/storage
-        version: link:../test-bruc3van/packages/storage/storage
-      '@deepseek-ai/dsh-storage-domain':
-        specifier: link:../test-bruc3van/packages/storage/storage-domain
-        version: link:../test-bruc3van/packages/storage/storage-domain
-      '@deepseek-ai/dsh-storage-json':
-        specifier: link:../test-bruc3van/packages/storage/storage-json
-        version: link:../test-bruc3van/packages/storage/storage-json
-      '@deepseek-ai/dsh-system-prompt':
-        specifier: link:../test-bruc3van/packages/core/system-prompt
-        version: link:../test-bruc3van/packages/core/system-prompt
-      '@deepseek-ai/dsh-tool-ask-user':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/interaction/tool-ask-user
-        version: link:../test-bruc3van/packages/interaction/tool-ask-user
-      '@deepseek-ai/dsh-tool-bash':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/bash/tool-bash
-        version: link:../test-bruc3van/packages/bash/tool-bash
-      '@deepseek-ai/dsh-tool-bash-persistent':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/pty/tool-bash-persistent
-        version: link:../test-bruc3van/packages/pty/tool-bash-persistent
-      '@deepseek-ai/dsh-tool-cordis':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/self-modification/tool-cordis
-        version: link:../test-bruc3van/packages/self-modification/tool-cordis
-      '@deepseek-ai/dsh-tool-fs':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/fs/tool-fs
-        version: link:../test-bruc3van/packages/fs/tool-fs
-      '@deepseek-ai/dsh-tool-fs-search':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/fs/tool-fs-search
-        version: link:../test-bruc3van/packages/fs/tool-fs-search
-      '@deepseek-ai/dsh-tool-goal':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/goal/tool-goal
-        version: link:../test-bruc3van/packages/goal/tool-goal
-      '@deepseek-ai/dsh-tool-ralph':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/workflow/tool-ralph
-        version: link:../test-bruc3van/packages/workflow/tool-ralph
-      '@deepseek-ai/dsh-tool-skill':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/skill/tool-skill
-        version: link:../test-bruc3van/packages/skill/tool-skill
-      '@deepseek-ai/dsh-tool-str-replace-editor':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/fs/tool-str-replace-editor
-        version: link:../test-bruc3van/packages/fs/tool-str-replace-editor
-      '@deepseek-ai/dsh-tool-subagent':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/subagent/tool-subagent
-        version: link:../test-bruc3van/packages/subagent/tool-subagent
-      '@deepseek-ai/dsh-tool-subagent-control':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/subagent/tool-subagent-control
-        version: link:../test-bruc3van/packages/subagent/tool-subagent-control
-      '@deepseek-ai/dsh-tool-tasks':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/tasks/tool-tasks
-        version: link:../test-bruc3van/packages/tasks/tool-tasks
-      '@deepseek-ai/dsh-tool-todo':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/todo/tool-todo
-        version: link:../test-bruc3van/packages/todo/tool-todo
-      '@deepseek-ai/dsh-tool-web':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/web/tool-web
-        version: link:../test-bruc3van/packages/web/tool-web
-      '@deepseek-ai/dsh-tool-workflow':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/workflow/tool-workflow
-        version: link:../test-bruc3van/packages/workflow/tool-workflow
-      '@deepseek-ai/dsh-user-interaction':
-        specifier: link:../test-bruc3van/packages/interaction/user-interaction
-        version: link:../test-bruc3van/packages/interaction/user-interaction
-      '@deepseek-ai/dsh-workflow-workerthread':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/workflow/workflow-workerthread
-        version: link:../test-bruc3van/packages/workflow/workflow-workerthread
-      '@deepseek-ai/dsh-workspace':
-        specifier: link:../test-bruc3van/packages/workspace/workspace
-        version: link:../test-bruc3van/packages/workspace/workspace
-      '@deepseek-ai/dsh-workspace-context':
-        specifier: link:../test-bruc3van/../test-bruc3van/packages/context/workspace-context
-        version: link:../test-bruc3van/packages/context/workspace-context
-      commander:
-        specifier: ^15.0.0
-        version: 15.0.0
       lucide-react:
         specifier: ^0.475.0
         version: 0.475.0(react@18.3.1)
@@ -188,6 +23,9 @@ importers:
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
       zustand:
         specifier: ^5.0.3
         version: 5.0.14(@types/react@18.3.31)(react@18.3.1)
@@ -216,9 +54,6 @@ importers:
       playwright-core:
         specifier: ^1.49.0
         version: 1.62.1
-      tsx:
-        specifier: ^4.19.0
-        version: 4.23.12
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1038,10 +873,6 @@ packages:
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
 
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
-    engines: {node: '>=22.12.0'}
-
   config-chain@1.1.13:
     resolution: {integrity: sha512-qj+f8APARXHrM0hraqXYb2/bOVSV4PvJQlNZ/DVj0QrmNM2q2euizkeuVckQ57J+W0mRH6Hvi+k50M4Jul2VRQ==}
 
@@ -1730,6 +1561,9 @@ packages:
   yauzl@2.10.0:
     resolution: {integrity: sha512-p4a9I6X6nu6IhoGmBqAcbJy1mlC4j27vEPZX9F4L4/vZT3Lyq1VkFHw/V/PUcB9Buo+DG3iHkT0x3Qya58zc3g==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
   zustand@5.0.14:
     resolution: {integrity: sha512-/8tAspM5LMPr28b3fwLYrtdj77ECpfZviaP75CMTnwO8ISyaE4GDIG/9rDDYq/cH9D2Xw2A2RXglLInmVBQB/g==}
     engines: {node: '>=12.20.0'}
@@ -2325,8 +2159,6 @@ snapshots:
 
   comma-separated-tokens@2.0.3: {}
 
-  commander@15.0.0: {}
-
   config-chain@1.1.13:
     dependencies:
       ini: 1.3.4
@@ -2458,6 +2290,7 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
+    optional: true
 
   escalade@3.2.0: {}
 
@@ -3251,6 +3084,7 @@ snapshots:
       esbuild: 0.28.2
     optionalDependencies:
       fsevents: 2.3.3
+    optional: true
 
   tunnel@0.0.6:
     optional: true
@@ -3334,6 +3168,8 @@ snapshots:
     dependencies:
       buffer-crc32: 0.2.13
       fd-slicer: 1.1.0
+
+  zod@4.4.3: {}
 
   zustand@5.0.14(@types/react@18.3.31)(react@18.3.1):
     optionalDependencies:

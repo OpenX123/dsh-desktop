@@ -2,25 +2,26 @@
 
 English | [中文](README.zh.md)
 
-The standalone desktop client for DeepSeek Harness: an **independent project** that consumes the official harness packages from a sibling checkout **without modifying them**. Product decisions and the process model live in [docs/desktop-client-architecture.md](docs/desktop-client-architecture.md); this README covers layout, prerequisites, and commands.
+The standalone desktop client for DeepSeek Harness: an **independent Electron application** that consumes **only the public interface of the official dsh Web UI** — its CLI (`dsh web`) and its `/api` wire contract. It imports no internal harness packages; the official repository is neither a dependency nor ever written to.
 
-The client is a separate product from the official `dsh` web UI: its own composition (the harness base bundle plus `overlay/desktop.cordis.patch.yml`), its own renderer, its own model-visible identity, and its own data home (`~/.dsh-desktop`, override with `DSH_DESKTOP_HOME`). It never boots the `dsh` web profile, mounts no web client plugins, and the official repository is never written to.
+The client's window loads the **official Web UI itself** — session titles and renaming, buttons, and every interaction are the official product's, by construction. It wears the official DeepSeek Harness logo (macOS dock template icon, Windows/Linux window icon) and a standard title bar. The client's own surface is a small connection-settings window (menu → "Web UI 连接…"). Product decisions and the process model live in [docs/desktop-client-architecture.md](docs/desktop-client-architecture.md); this README covers layout, prerequisites, and commands.
 
-## Layout
+## Runtime model
 
-```
-vscode-projects/
-├── test-bruc3van/     # the official deepseek-harness checkout (read-only, sibling)
-└── dsh-desktop/       # this project
-```
+The client connects to a **dsh Web UI** through its public interface — two modes, switched from the settings panel:
 
-`package.json` consumes the official packages through pnpm `link:` dependencies that point at the sibling checkout. The official repo must have run `pnpm install` and `pnpm run build:lib` once (its `lib/` artifacts are what the client loads at runtime).
+- **Smart (default, no address set)**: the client first probes a locally running official instance on the default port (`http://127.0.0.1:3080`) and connects to it — the window and the browser then share ONE harness process, so conversations and session state sync **in real time**. Only when nothing answers does the client launch its own `dsh web --port 0` (CLI resolved in this order: `DSH_DESKTOP_DSH` → the **app-bundled `@deepseek-ai/dsh` npm package** (the official distribution, declared in `optionalDependencies`; once it is published, a plain `pnpm install` at build time bundles it — end users never run npm) → `dsh` on PATH → the conventional sibling checkouts for development). Two harness processes share the same `~/.dsh` data on disk, but only a shared process syncs live.
+- **Connect**: a Web UI address (local or remote) entered in 设置 (Settings). The client speaks only the `/api` wire contract; no local runtime is spawned.
+
+**Packaging note**: the installer bundles the app's `node_modules` (standard Electron packaging), so the bundled `dsh` ships inside the app. In the packaged app the child runs on Electron's own Node (`ELECTRON_RUN_AS_NODE`), which satisfies the harness engine range — a system Node is not required. Caveat verified during development: Electron's run-as-node ESM resolver does not follow symlinked `node_modules` (the pnpm workspace layout), so the packaged dependency tree must be a real npm-style install (what electron-builder produces); verify once at packaging time.
+
+**Data**: in local mode the child runs with the **official `DSH_HOME` (`~/.dsh`, override via the `DSH_HOME` environment variable)** — the same data the `dsh` CLI and the browser Web UI use, so existing conversations, titles, credentials, and model configuration are shared. The client's own connection settings live in its own home (`~/.dsh-desktop`, override `DSH_DESKTOP_HOME`).
 
 ## Requirements
 
-- Node `^22.19.0 || >=24.0.0` (the harness child runs on the system Node; a bundled runtime is a packaging follow-up)
-- The official checkout as a sibling named `test-bruc3van` (or set `DSH_HARNESS_REPO` to its absolute path)
-- macOS (current development target; Windows/Linux are follow-ups)
+- Node `^22.19.0 || >=24.0.0` (for local mode, the `dsh` CLI runs on the system Node; a bundled runtime is a packaging follow-up)
+- macOS, Windows, or Linux — no platform-specific code paths (the window title bar, process termination, and home-directory resolution are platform-aware)
+- Local mode additionally needs the official `dsh` CLI (see above); connect mode needs a reachable Web UI instance
 
 ## Commands
 
@@ -36,20 +37,21 @@ pnpm run shot           # screenshot scenario into shots/
 pnpm run e2e            # live end-to-end smoke (needs an API key, see below)
 ```
 
-The Electron main spawns the harness child (plain Node + tsx), waits for the `dsh-desktop: <url>` readiness line, and loads the renderer from the loopback carrier at `/app/`.
-
 ## First run
 
-1. Launch the client (`pnpm run dev`).
-2. Open 设置 (Settings) from the sidebar footer, paste a `DEEPSEEK_API_KEY`, and save. The key is written through the credentials seam into the client's own managed document under `~/.dsh-desktop` — never into configuration files in plain text.
+1. Launch the client (`pnpm run dev`). A local `dsh web` is started automatically and the official Web UI opens in the window. If the CLI is missing or a remote Web UI is preferred, use the app menu → "Web UI 连接…".
+2. Open 设置 (Settings) in the sidebar footer, paste a `DEEPSEEK_API_KEY`, and save. The key is written through the credentials seam into the Web UI's managed document under the client's data home — never into configuration files in plain text.
 3. Type a message in the composer; a session starts automatically if none is active.
 
 ## Scripts
 
-- `scripts/shot.mjs` — screenshot scenario (empty state, settings, composer draft, model menu; plus the live conversation when a key is configured).
-- `scripts/audit.mjs` — asserts the visual contract (sidebar geometry, palette, composer radius, type scale, motion duration) through computed styles.
-- `scripts/e2e.mjs` — end-to-end smoke: saves the key through the settings panel, sends a real prompt, verifies the streamed reply.
+- `scripts/shot.mjs` — screenshot scenario of the official Web UI in the client window (empty state, settings, composer draft).
+- `scripts/audit.mjs` — interface boot smoke: the official UI must boot (boot manifest, sidebar, composer) without page errors.
+- `scripts/e2e.mjs` — end-to-end smoke: sends a real prompt through the official composer, verifies the streamed reply.
 
-## Known limitations
+The custom renderer tree (`src/renderer/`) is retained for reference but is no longer built or loaded; `pnpm run build:renderer` still produces it.
 
-macOS-first: paths use `HOME`, the window uses `hiddenInset`, and the native directory picker requires the host's desktop tooling. The harness child inherits the environment; a bundled Node runtime and platform packaging (electron-builder) are follow-up work. Deferred seats (each recorded in the architecture doc): IPC carrier instead of loopback HTTP, system tray and notifications, OS keychain provider, queue editing, attachments, voice input.
+## Follow-up work
+
+- **Official npm release sync** — blocked on the official `@deepseek-ai/dsh` npm package being published (not on the registry yet). Once it is: promote it from `optionalDependencies` to a pinned dependency, add a bump script (check latest version → update package.json → rebuild + smoke), and make the release flow "bump version + repackage". This pipeline is how official Web UI updates reach end users.
+- Bundled Node runtime, packaging/distribution (electron-builder), system tray and notifications, OS keychain provider, and voice input remain follow-up work.

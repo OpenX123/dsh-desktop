@@ -6,22 +6,22 @@
  */
 
 import { create } from 'zustand'
-import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
-import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import type { MessageId } from '../api/contract/types'
+import type { ImageMediaType } from '../api/contract/types'
+import type { SessionId } from '../api/contract/types'
+import type { RpcId } from '../api/contract/wire'
 import type {
   HostFrame, MuxFrame,
-} from '@deepseek-ai/dsh-host-apiproxy/api/events'
+} from '../api/contract/types'
 import type {
   SessionModels, SessionSummary,
-} from '@deepseek-ai/dsh-host-apiproxy/api/sessions'
-import type { WorkspaceView, WorkspaceId } from '@deepseek-ai/dsh-host-apiproxy/api/workspace'
-import type { CommandDescriptor } from '@deepseek-ai/dsh-host-apiproxy/api/commands'
-import type { SkillEntry } from '@deepseek-ai/dsh-host-apiproxy/api/skills'
-import type { AgentPresetEntry } from '@deepseek-ai/dsh-host-apiproxy/api/agent-presets'
-import type { GoalRef } from '@deepseek-ai/dsh-host-apiproxy/api/goals'
-import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-interaction/types'
+} from '../api/contract/types'
+import type { WorkspaceView, WorkspaceId } from '../api/contract/types'
+import type { CommandDescriptor } from '../api/contract/types'
+import type { SkillEntry } from '../api/contract/types'
+import type { AgentPresetEntry } from '../api/contract/types'
+import type { GoalRef } from '../api/contract/types'
+import type { AskUserQuestionItem } from '../api/contract/types'
 import { DesktopApiClient } from '../api/client'
 import { emptySession, foldEvent, type SessionUi } from './fold'
 
@@ -46,6 +46,14 @@ export interface ContextInfo {
   path: string
   branch?: string
   exists: boolean
+}
+
+/** Connection facts served by the client's own carrier (/desktop/status). */
+export interface ConnectionStatus {
+  mode: 'local' | 'connect'
+  targetUrl: string
+  childPid?: number
+  lastError?: string
 }
 
 /** One draft image attachment waiting in the composer. */
@@ -93,6 +101,7 @@ interface AppStore {
   questions: PendingQuestion[]
   models: SessionModels | null
   context: ContextInfo | null
+  connection: ConnectionStatus | null
 
   /** Content search results (null = no active query). */
   searchResults: { sessionId: SessionId; snippet: string }[] | null
@@ -109,6 +118,8 @@ interface AppStore {
 
   boot(): void
   refresh(): Promise<void>
+  refreshConnection(): Promise<void>
+  saveServerUrl(serverUrl: string): Promise<void>
   openSession(sessionId: SessionId): Promise<void>
   newSession(workspaceId?: WorkspaceId): Promise<void>
   deleteSession(sessionId: SessionId): Promise<void>
@@ -348,6 +359,7 @@ export const useApp = create<AppStore>((set, get) => {
     questions: [],
     models: null,
     context: null,
+    connection: null,
     searchResults: null,
     commands: [],
     skills: [],
@@ -358,21 +370,60 @@ export const useApp = create<AppStore>((set, get) => {
 
     boot(): void {
       const api = new DesktopApiClient()
-      set({ api })
+      set({ api, phase: 'connecting' })
       void (async () => {
-        try {
-          const describe = await api.host.describe({})
-          if (!describe.result.ok) throw new Error(describe.result.error.message)
-          set({ host: describe.result.value })
-        } catch (error) {
-          set({ phase: 'error', error: `无法连接本地运行时：${error instanceof Error ? error.message : String(error)}` })
+        // The local dsh web child takes a moment to boot; retry describe with
+        // backoff before declaring the connection dead.
+        let describe: Awaited<ReturnType<DesktopApiClient['host']['describe']>> | null = null
+        let lastError: unknown = null
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            describe = await api.host.describe({})
+            if (describe.result.ok) break
+            lastError = describe.result.error.message
+          } catch (error) {
+            lastError = error
+          }
+          await sleep(1000)
+        }
+        if (describe === null || !describe.result.ok) {
+          set({
+            phase: 'error',
+            error: `无法连接 Web UI：${lastError instanceof Error ? lastError.message : String(lastError)}`,
+          })
           return
         }
-        set({ phase: 'ready' })
+        set({ host: describe.result.value, phase: 'ready' })
         runStreams()
         void get().refresh()
         void get().refreshPresets()
+        void get().refreshConnection()
       })()
+    },
+
+    /** Read the carrier's connection facts (Web UI origin, launch mode). */
+    async refreshConnection(): Promise<void> {
+      try {
+        const response = await fetch('/desktop/status')
+        set({ connection: await response.json() as ConnectionStatus })
+      } catch {
+        set({ connection: null })
+      }
+    },
+
+    /** Persist the Web UI address and reconnect (empty = launch dsh locally). */
+    async saveServerUrl(serverUrl: string): Promise<void> {
+      try {
+        await fetch('/desktop/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ serverUrl: serverUrl.trim() }),
+        })
+      } catch {
+        // The reload below surfaces the failure through the boot screen.
+      }
+      // A full reload re-boots the client against the new origin.
+      globalThis.location.reload()
     },
 
     async refresh(): Promise<void> {

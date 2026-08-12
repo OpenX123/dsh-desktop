@@ -11,7 +11,7 @@ import {
   Bell, ChevronDown, ChevronRight, Clock, Folder, FolderPlus, ListTodo,
   MessageSquare, Plus, Search, Settings, Sparkles, Star, Trash2,
 } from 'lucide-react'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionId } from '../api/contract/types'
 import type { TaskView } from '../state/fold'
 import { useApp } from '../state/store'
 
@@ -288,7 +288,7 @@ export function Sidebar(): React.JSX.Element {
           <span className="user-name">{user}</span>
           <span className={`user-status ${phase}`}>
             <span className="status-dot" />
-            {phase === 'ready' ? '本地运行时已连接' : '连接中'}
+            {phase === 'ready' ? 'Web UI 已连接' : '连接中'}
           </span>
         </div>
         <button className="icon-btn" title="设置" aria-label="设置" onClick={() =>{  setSettingsOpen(true) }}>

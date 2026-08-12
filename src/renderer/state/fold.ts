@@ -5,8 +5,7 @@
  * @module desktop/renderer/state/fold
  */
 
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
-import type { ContentBlock, StreamChunk } from '@deepseek-ai/dsh-llm/types'
+import type { SessionEvent, SessionId, ContentBlock, StreamChunk } from '../api/contract/types'
 
 /** One tool invocation row inside an assistant message. */
 export interface ToolRow {
