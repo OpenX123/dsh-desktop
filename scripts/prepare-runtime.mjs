@@ -6,8 +6,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readdir, rm, stat } from 'node:fs/promises'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -20,6 +20,14 @@ const pnpmArgs = [
   'deploy',
   '--prod',
   '--frozen-lockfile',
+  // A hoisted closure is what survives packaging. pnpm's default layout puts
+  // auto-installed peers under .pnpm/node_modules and reaches them by walking
+  // up from a symlink's realpath; the Windows NSIS installer materializes those
+  // symlinks as real directories, which strands the peers and left the
+  // installed build unable to import @deepseek-ai/dsh-app-boot. Hoisting also
+  // flattens .pnpm's long store paths, keeping the installed tree inside the
+  // 260-character Windows MAX_PATH that the default layout overshot.
+  '--node-linker=hoisted',
   '.runtime',
 ]
 
