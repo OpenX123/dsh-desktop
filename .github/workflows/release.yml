@@ -46,7 +46,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: 校验 tag 与版本 / Validate tag and version
+      - name: 校验 tag 并解析版本 / Validate tag and resolve version
         id: version
         shell: bash
         run: |
@@ -61,13 +61,9 @@ jobs:
             exit 1
           fi
 
+          # 版本号以 tag 为准，构建时写入 package.json，不再要求源码提前同步。
+          # The tag is the source of truth; builds write it into package.json.
           VERSION="${RELEASE_TAG#v}"
-          PACKAGE_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
-          if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
-            echo "tag 与 package.json 版本不一致 / Version mismatch: tag=$VERSION package=$PACKAGE_VERSION" >&2
-            exit 1
-          fi
-
           PRERELEASE=false
           [[ "$VERSION" == *-* ]] && PRERELEASE=true
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
@@ -86,24 +82,78 @@ jobs:
       - name: 构建主进程 / Build shell
         run: pnpm run build
 
+  prepare-release:
+    name: 创建草稿 Release / Create draft release
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+
+    steps:
+      - name: 按需创建草稿 Release / Create draft release if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，复用之 / already exists, reusing it"
+            exit 0
+          fi
+
+          cat > release-notes.md <<'EOF'
+          > **非官方项目 / Unofficial project:** 此桌面客户端由社区独立维护，并非 DeepSeek 官方产品，也不由 DeepSeek 背书或提供支持。This community desktop client is not an official DeepSeek product and is not endorsed or supported by DeepSeek.
+
+          ## 下载说明
+
+          本版本由 GitHub Actions 从对应 tag 自动构建，安装包内置固定版本的官方 `dsh` 运行时，无需另装 Node.js、pnpm 或 dsh CLI。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请使用 `SHA256SUMS.txt` 校验下载文件。
+
+          ## Download notes
+
+          This release was built automatically from the matching tag and bundles a pinned official `dsh` runtime, so Node.js, pnpm, and a separate dsh CLI are not required. Packages are currently unsigned, so the operating system may show a security warning on first launch. Use `SHA256SUMS.txt` to verify downloads.
+          EOF
+
+          FLAGS=(--draft --verify-tag --title "DeepSeek Harness Desktop $RELEASE_TAG" --notes-file release-notes.md)
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${FLAGS[@]}"
+
   build:
     name: 构建 ${{ matrix.name }} / Build ${{ matrix.name }}
-    needs: validate
+    needs:
+      - validate
+      - prepare-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS Universal
-            os: macos-latest
-            command: pnpm exec electron-builder --mac dmg zip --universal --publish never
+          - name: macOS Apple Silicon
+            id: macos-arm64
+            os: macos-15
+            command: pnpm exec electron-builder --mac dmg zip --arm64 --publish never
+            smoke: pnpm run smoke:package
+          - name: macOS Intel
+            id: macos-x64
+            os: macos-15-intel
+            command: pnpm exec electron-builder --mac dmg zip --x64 --publish never
             smoke: pnpm run smoke:package
           - name: Windows x64
+            id: windows-x64
             os: windows-latest
             command: pnpm exec electron-builder --win nsis zip --x64 --publish never
             smoke: pnpm run smoke:package
           - name: Linux x64
+            id: linux-x64
             os: ubuntu-latest
             command: pnpm exec electron-builder --linux AppImage deb --x64 --publish never
             smoke: xvfb-run -a pnpm run smoke:package
@@ -122,6 +172,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: 写入发布版本号 / Write release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: npm pkg set "version=$RELEASE_VERSION"
 
       - name: 安装依赖 / Install dependencies
         run: pnpm install --frozen-lockfile
@@ -193,7 +249,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dsh-desktop-${{ matrix.os }}
+          name: dsh-desktop-${{ matrix.id }}
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -207,8 +263,28 @@ jobs:
             !release/builder-debug.yml
             !release/builder-effective-config.yaml
 
-  release:
-    name: 创建 GitHub Release / Create GitHub Release
+      # 只有本平台全部冒烟测试通过后，安装包才会进入草稿 Release。
+      # Packages reach the draft release only after every smoke check passed.
+      - name: 上传安装包到草稿 Release / Upload packages to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap)
+          if (( ${#files[@]} == 0 )); then
+            echo "release/ 下没有找到安装包 / No packages found under release/" >&2
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+
+  publish:
+    name: 发布 GitHub Release / Publish GitHub Release
     needs:
       - validate
       - build
@@ -216,55 +292,40 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
 
     steps:
-      - name: 下载全部产物 / Download all artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: 生成 SHA-256 校验文件 / Generate checksums
+      - name: 下载 Release 资产 / Download release assets
         shell: bash
         run: |
           set -euo pipefail
-          cd artifacts
-          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+          mkdir -p assets
+          gh release download "$RELEASE_TAG" --dir assets --pattern '*' --clobber
+
+      - name: 生成并上传 SHA-256 校验文件 / Generate and upload checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          rm -f SHA256SUMS.txt
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\0' \
             | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS.txt
+            | xargs -0 -r sha256sum > SHA256SUMS.txt
+          gh release upload "$RELEASE_TAG" SHA256SUMS.txt --clobber
 
-      - name: 创建或更新 Release / Create or update release
+      - name: 将草稿转为正式发布 / Publish completed release
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
           set -euo pipefail
 
-          cat > release-notes.md <<'EOF'
-          > **非官方项目 / Unofficial project:** 此桌面客户端由社区独立维护，并非 DeepSeek 官方产品，也不由 DeepSeek 背书或提供支持。This community desktop client is not an official DeepSeek product and is not endorsed or supported by DeepSeek.
-
-          ## 下载说明
-
-          本版本由 GitHub Actions 从对应 tag 自动构建，安装包内置固定版本的官方 `dsh` 运行时，无需另装 Node.js、pnpm 或 dsh CLI。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请使用 `SHA256SUMS.txt` 校验下载文件。
-
-          ## Download notes
-
-          This release was built automatically from the matching tag and bundles a pinned official `dsh` runtime, so Node.js, pnpm, and a separate dsh CLI are not required. Packages are currently unsigned, so the operating system may show a security warning on first launch. Use `SHA256SUMS.txt` to verify downloads.
-          EOF
-
-          mapfile -d '' FILES < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber
+          FLAGS=(--draft=false)
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            FLAGS+=(--prerelease)
           else
-            FLAGS=(--verify-tag --title "DeepSeek Harness Desktop $RELEASE_TAG" --notes-file release-notes.md)
-            if [[ "$IS_PRERELEASE" == "true" ]]; then
-              FLAGS+=(--prerelease)
-            else
-              FLAGS+=(--latest)
-            fi
-            gh release create "$RELEASE_TAG" "${FILES[@]}" "${FLAGS[@]}"
+            FLAGS+=(--latest)
           fi
+          gh release edit "$RELEASE_TAG" "${FLAGS[@]}"
