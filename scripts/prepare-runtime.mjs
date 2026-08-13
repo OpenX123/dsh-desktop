@@ -44,3 +44,43 @@ const code = await new Promise((resolve, reject) => {
   child.once('exit', resolve)
 })
 if (code !== 0) throw new Error('dsh runtime deployment failed (code=' + String(code) + ')')
+
+/**
+ * Build artefacts that no runtime code path can execute: source maps and
+ * TypeScript declarations. Removing them cuts the file count the packager
+ * compresses and the installer writes back out, which is the dominant cost of
+ * the Windows release job.
+ *
+ * Matching is by extension only. Pruning conventional directory names is not
+ * safe here: `yaml` ships its runtime composer under `dist/doc/`, so a rule
+ * that dropped `doc/` silently removed executable code and the packaged app
+ * failed to boot. Licence and notice files are untouched for the same reason
+ * they must be — the closure is redistributed inside the installer.
+ */
+const PRUNED_EXTENSIONS = ['.map', '.d.ts', '.d.cts', '.d.mts']
+const isPrunedFile = name => PRUNED_EXTENSIONS.some(extension => name.endsWith(extension))
+
+let prunedFiles = 0
+let prunedBytes = 0
+async function prune(directory) {
+  const entries = await readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
+    const path = join(directory, entry.name)
+    // Symlinks are followed by neither branch: the hoisted closure keeps a few,
+    // and descending through them would leave the real target half-pruned.
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) {
+      await prune(path)
+      continue
+    }
+    if (!entry.isFile() || !isPrunedFile(entry.name)) continue
+    prunedBytes += (await stat(path)).size
+    prunedFiles += 1
+    await rm(path, { force: true })
+  }
+}
+
+const runtimeModules = join(destination, 'node_modules')
+await prune(runtimeModules)
+console.log('[runtime] pruned ' + prunedFiles + ' development entries ('
+  + (prunedBytes / 1e6).toFixed(1) + ' MB) from ' + relative(APP_DIR, runtimeModules))
