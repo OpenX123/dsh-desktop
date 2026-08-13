@@ -8,6 +8,7 @@ directories:
 files:
   - .build/**/*
   - resources/**/*
+  - vendor/**/*
   - package.json
   - LICENSE
   - "!node_modules/**/*"

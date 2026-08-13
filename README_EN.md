@@ -14,6 +14,7 @@ DeepSeek Harness Desktop is an independent Electron client for `dsh`. It starts 
 ## Why use the desktop client?
 
 - **The real Harness experience** — the app loads the official Web UI itself. Projects, conversations, tasks, models, permissions, goals, plans, skills, and slash commands behave exactly as they do in the official product.
+- **Desktop-owned enhancements** — a locally spawned `dsh web` automatically gets the desktop's built-in patch: a Skills management page in settings (view, disable, delete local skills) and a composer "+" button that opens the same commands + skills menu as typing `/`. The patch artifacts ship with this repo (`vendor/dsh-web-patch/`) and never modify the official source.
 - **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you.
 - **Keep your work continuous** — local mode uses the same `~/.dsh` data as the `dsh` CLI and browser Web UI. Your conversations, titles, credentials, and model configuration stay together.
 - **Connect wherever your Agent runs** — use the local runtime for everyday work, or point the app at another reachable `dsh Web UI` instance.
@@ -99,6 +100,7 @@ The Electron window runs with context isolation and sandboxing enabled, Node int
 - Reopen the window from the tray icon.
 - Quit from the tray menu, application menu, or `Cmd+Q` on macOS.
 - If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
+- If the page is unexpectedly blank after system resume or a long idle, the client verifies the Web UI and reloads it automatically.
 
 ## Development
 

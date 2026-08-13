@@ -23,7 +23,8 @@ import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from 'electron'
+import { applyDshWebPatch, describePatchResult } from './dsh-patch.ts'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -187,6 +188,15 @@ class WebUiManager {
   spawn(): void {
     mkdirSync(childHome(), { recursive: true })
     const dsh = resolveDshCommand()
+    // The desktop owns product changes to the official Web UI (skills
+    // management, full-roster composer launcher). Overlay their pre-built
+    // artifacts onto this local dsh installation before the child serves
+    // them; probe/connect modes load a remote server and skip it.
+    if (dsh.args[0] !== undefined) {
+      console.log(describePatchResult(applyDshWebPatch(dsh.args[0])))
+    } else {
+      console.log('dsh web patch: PATH-dsh resolution, skipping overlay (features stay stock)')
+    }
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
       env: {
@@ -302,6 +312,12 @@ let launchBudget = MAX_LAUNCH_RETRIES
 let quitting = false
 /** Monotonic connection intent; stale probes/readiness callbacks cannot win. */
 let connectionGeneration = 0
+/** Avoid concurrent health probes and reload loops after sleep/wake churn. */
+let windowRecoveryInFlight = false
+let lastAutomaticReloadAt = 0
+let windowHealthTimer: NodeJS.Timeout | undefined
+const AUTOMATIC_RELOAD_COOLDOWN_MS = 30_000
+const WINDOW_HEALTH_INTERVAL_MS = 60_000
 
 /** Exponential delay derived from the number of retries already consumed. */
 function relaunchDelayMs(remainingRetries: number): number {
@@ -364,6 +380,55 @@ function appOrigin(url: string): string {
   }
 }
 
+/** The official UI always renders visible text; an empty body after settling is a blank renderer. */
+async function hasVisiblePageContent(window: BrowserWindow): Promise<boolean> {
+  if (window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isLoadingMainFrame()) return true
+  try {
+    return await window.webContents.executeJavaScript(`(() => {
+      const body = document.body
+      if (document.readyState !== 'complete' || body === null) return true
+      const rect = body.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0 && (body.innerText || '').trim().length > 0
+    })()`, true) as boolean
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Recover a renderer that went blank after a long idle or system resume.
+ * Two DOM samples avoid reloading a page during a normal React transition;
+ * the runtime probe prevents turning a temporary server outage into a loop.
+ */
+async function recoverBlankWindow(reason: string, force = false): Promise<void> {
+  const window = mainWindow
+  const target = currentTarget()
+  if (window === null || target === undefined || window.isDestroyed() || quitting || windowRecoveryInFlight) return
+  if (Date.now() - lastAutomaticReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS) return
+  if (!force && (window.isMinimized() || !window.isVisible())) return
+
+  windowRecoveryInFlight = true
+  try {
+    if (!force && await hasVisiblePageContent(window)) return
+    if (!force) {
+      await new Promise(resolve => setTimeout(resolve, 2_000))
+      if (window !== mainWindow || await hasVisiblePageContent(window)) return
+    }
+    if (await probeWebUi(target) === undefined || window !== mainWindow || window.isDestroyed()) return
+
+    lastAutomaticReloadAt = Date.now()
+    console.warn('[desktop] reloading blank Web UI (' + reason + ')')
+    window.webContents.reload()
+  } finally {
+    windowRecoveryInFlight = false
+  }
+}
+
+/** Check only a visible window; hidden tray sessions must not be refreshed in the background. */
+function scheduleWindowHealthCheck(reason: string, delayMs = 1_000): void {
+  setTimeout(() => { void recoverBlankWindow(reason) }, delayMs).unref()
+}
+
 /** The official DeepSeek Harness logo: rounded-corner dark tile with the white glyph. */
 const ICON_PNG = join(APP_DIR, 'resources', 'icon-app.png')
 
@@ -391,6 +456,8 @@ function createWindow(url: string): void {
     },
   })
   mainWindow.once('ready-to-show', () => { mainWindow?.show() })
+  mainWindow.on('show', () => { scheduleWindowHealthCheck('window shown') })
+  mainWindow.on('focus', () => { scheduleWindowHealthCheck('window focused') })
   mainWindow.on('closed', () => {
     mainWindow = null
     mainWindowRequested = false
@@ -424,6 +491,20 @@ function createWindow(url: string): void {
       else app.quit()
     })
   })
+  // Chromium may lose its renderer after sleep or resource pressure without a
+  // did-fail-load event. Reloading the surviving Web UI origin recreates it.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.warn('[desktop] renderer process gone:', details.reason, details.exitCode)
+    void recoverBlankWindow('renderer ' + details.reason, true)
+  })
+  let rendererUnresponsive = false
+  mainWindow.on('unresponsive', () => {
+    rendererUnresponsive = true
+    setTimeout(() => {
+      if (rendererUnresponsive) void recoverBlankWindow('renderer unresponsive', true)
+    }, 30_000).unref()
+  })
+  mainWindow.on('responsive', () => { rendererUnresponsive = false })
   void mainWindow.loadURL(url)
 }
 
@@ -788,6 +869,9 @@ if (!gotLock) {
     await startSettingsServer()
     installMenu()
     createTray()
+    powerMonitor.on('resume', () => { scheduleWindowHealthCheck('system resume', 3_000) })
+    windowHealthTimer = setInterval(() => { void recoverBlankWindow('periodic health check') }, WINDOW_HEALTH_INTERVAL_MS)
+    windowHealthTimer.unref()
     // The official page's enhanced-features card bridges through these.
     ipcMain.handle('desktop:connection:status', () => getStatusJson())
     ipcMain.handle('desktop:connection:save', (_event, serverUrl: unknown) => {
@@ -824,6 +908,7 @@ if (!gotLock) {
     if (quitting) return
     event.preventDefault()
     quitting = true
+    if (windowHealthTimer !== undefined) clearInterval(windowHealthTimer)
     void webUi?.stop().finally(() => { app.quit() })
   })
 }
