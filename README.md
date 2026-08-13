@@ -48,7 +48,23 @@ DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启
 
 #### 首次打开被系统拦截时
 
-- **macOS**：先双击应用并让系统显示一次拦截提示，然后打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」并输入登录密码。该按钮只会在尝试打开后的一段时间内出现。详见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+- **macOS**：当前安装包尚未使用 Apple Developer ID 签名和公证。只从本仓库 Release 下载 DMG，并先在「终端」核对 SHA-256：
+
+  ```sh
+  cd ~/Downloads
+  shasum -a 256 dsh-desktop-*.dmg
+  ```
+
+  将输出与同一 Release 中 `SHA256SUMS.txt` 对应文件的值比较。确认一致后，把应用拖入「应用程序」，双击一次，然后打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」并输入登录密码。该按钮只会在尝试打开后的一段时间内出现。详见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+
+  如果仍显示“已损坏，无法打开”且没有「仍要打开」，仅在 SHA-256 已确认一致时执行：
+
+  ```sh
+  xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
+  open "/Applications/DeepSeek Harness Desktop.app"
+  ```
+
+  该命令只移除此应用的下载隔离标记，不会全局关闭 Gatekeeper，不需要 `sudo`。如果校验值不一致，请删除文件并重新下载，不要执行上述命令。
 - **Windows**：如果 Microsoft Defender SmartScreen 显示保护提示，请先核对下载来源和 SHA-256，确认后选择「更多信息 → 仍要运行」。
 
 ### 从源码运行

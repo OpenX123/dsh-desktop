@@ -48,7 +48,23 @@ Automated packages are currently unsigned on macOS and Windows. The operating sy
 
 #### If the operating system blocks the first launch
 
-- **macOS:** Double-click the app once so macOS records the blocked attempt. Then open **System Settings → Privacy & Security**, find the Security section, choose **Open Anyway**, and enter your login password. The button is available only for a limited time after the launch attempt. See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+- **macOS:** Current packages are not yet signed and notarized with an Apple Developer ID. Download the DMG only from this repository's Release and first verify its SHA-256 in Terminal:
+
+  ```sh
+  cd ~/Downloads
+  shasum -a 256 dsh-desktop-*.dmg
+  ```
+
+  Compare the output with the matching file in `SHA256SUMS.txt` from the same Release. If it matches, drag the app to **Applications**, double-click it once, then open **System Settings → Privacy & Security** and choose **Open Anyway** in the Security section. Enter your login password when prompted. The button is available only for a limited time after the launch attempt. See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+
+  If macOS still says the app is damaged and **Open Anyway** is unavailable, run the following only after the SHA-256 has been verified:
+
+  ```sh
+  xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
+  open "/Applications/DeepSeek Harness Desktop.app"
+  ```
+
+  This removes the download quarantine attribute only from this app. It does not disable Gatekeeper globally and does not require `sudo`. If the checksum does not match, delete the file and download it again instead of running the command.
 - **Windows:** If Microsoft Defender SmartScreen shows a protection prompt, first verify the download source and SHA-256 checksum. Then choose **More info → Run anyway** only if they match.
 
 ### Run from source
