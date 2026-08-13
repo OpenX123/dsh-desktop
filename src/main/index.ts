@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from 'electron'
 
@@ -89,6 +89,68 @@ function nodeForChild(): string {
 }
 
 /**
+ * macOS GUI applications inherit launchd's small PATH instead of the user's
+ * login-shell PATH. The official runtime later derives Agent command
+ * environments from this process, so Homebrew and version-manager tools would
+ * otherwise disappear only in the packaged app. Read one PATH value through
+ * the user's absolute login shell, with a short deadline and no interactive
+ * startup, then merge only absolute path entries into the existing value.
+ */
+async function restoreMacGuiPath(): Promise<void> {
+  if (process.platform !== 'darwin' || !app.isPackaged || process.env.DSH_DESKTOP_SKIP_LOGIN_PATH === '1') return
+
+  const configuredShell = userInfo().shell
+  const shellPath = typeof configuredShell === 'string' && isAbsolute(configuredShell) && existsSync(configuredShell)
+    ? configuredShell
+    : '/bin/zsh'
+  const loginPath = await new Promise<string | undefined>((resolve) => {
+    let settled = false
+    let stdout = ''
+    const finish = (value?: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolve(value)
+    }
+    const child = spawn(shellPath, ['-l', '-c', 'printf \'\\0%s\\0\' "$PATH"'], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const timeout = setTimeout(() => {
+      child.kill()
+      finish()
+    }, 3_000)
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+      if (stdout.length > 65_536) stdout = stdout.slice(-65_536)
+    })
+    child.once('error', () => { finish() })
+    child.once('exit', (code) => {
+      const end = stdout.lastIndexOf('\0')
+      const start = end > 0 ? stdout.lastIndexOf('\0', end - 1) : -1
+      finish(code === 0 && start >= 0 && end > start ? stdout.slice(start + 1, end) : undefined)
+    })
+  })
+
+  // Shells that model PATH as a list (fish) join it with spaces rather than the
+  // path delimiter, which yields one long pseudo-absolute entry. Requiring the
+  // directory to exist drops that value instead of prepending a bogus entry.
+  const fromLogin = (loginPath ?? '').split(delimiter)
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '' && isAbsolute(entry) && existsSync(entry))
+  const fromLaunch = (process.env.PATH ?? '').split(delimiter)
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '' && isAbsolute(entry))
+  const merged = [...new Set([...fromLogin, ...fromLaunch])].join(delimiter)
+  if (merged === '') {
+    console.warn('[desktop] login-shell PATH unavailable; keeping the launch environment')
+    return
+  }
+  process.env.PATH = merged
+  console.log('[desktop] restored PATH from the macOS login shell')
+}
+
+/**
  * The bundled dsh CLI. Release builds use pnpm deploy to materialize the
  * complete production closure outside app.asar; development resolves the same
  * pinned package from the dsh-runtime workspace. An end user needs neither a
@@ -130,6 +192,13 @@ interface DshCommand {
   source: 'override' | 'bundled' | 'checkout' | 'path'
 }
 
+class BundledRuntimeMissingError extends Error {
+  constructor() {
+    super('安装包中缺少内置 dsh 运行时。请重新从项目的 GitHub Releases 下载并安装完整客户端。')
+    this.name = 'BundledRuntimeMissingError'
+  }
+}
+
 function resolveDshCommand(): DshCommand {
   const explicit = process.env.DSH_DESKTOP_DSH
   if (explicit !== undefined && explicit.trim() !== '') {
@@ -137,6 +206,10 @@ function resolveDshCommand(): DshCommand {
   }
   const bundled = resolveBundledDsh()
   if (bundled !== undefined) return bundled
+  // A release artifact is self-contained by contract. Falling through to a
+  // PATH lookup hides packaging damage behind several guaranteed ENOENT
+  // retries on an ordinary user's machine.
+  if (app.isPackaged) throw new BundledRuntimeMissingError()
   // Dev convenience: probe sibling checkouts (read-only; never a package dependency).
   const siblings = fileURLToPath(new URL('../..', import.meta.url))
   for (const name of ['test-bruc3van', 'deepseek-harness']) {
@@ -173,16 +246,24 @@ class WebUiManager {
   private generation: WebUiGeneration | undefined
   /** A stop in flight must finish before another generation can be spawned. */
   private stopping: Promise<void> | undefined
+  /**
+   * A failure no relaunch can repair (a damaged installation). It is reported
+   * through onExit exactly once; later readiness requests reject with it
+   * instead of spawning again, so the user never collects a stack of identical
+   * error dialogs by reopening the window.
+   */
+  private fatalError: Error | undefined
   lastError: string | null = null
 
   constructor(
     private readonly onLog: (line: string) => void,
-    private readonly onExit: (info: { wasReady: boolean; code: number | null; signal: NodeJS.Signals | null }) => void,
+    private readonly onExit: (info: { wasReady: boolean; code: number | null; signal: NodeJS.Signals | null; retryable: boolean }) => void,
   ) {}
 
   /** The current generation's readiness, or a fresh spawn when none exists. */
   async ready(): Promise<string> {
     await this.stopping
+    if (this.fatalError !== undefined) throw this.fatalError
     const gen = this.generation
     if (gen !== undefined) return gen.ready
     this.spawn()
@@ -198,8 +279,20 @@ class WebUiManager {
   }
 
   spawn(): void {
+    if (this.fatalError !== undefined) return
     mkdirSync(childHome(), { recursive: true })
-    const dsh = resolveDshCommand()
+    let dsh: DshCommand
+    try {
+      dsh = resolveDshCommand()
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.fatalError = failure
+      this.lastError = failure.message
+      queueMicrotask(() => {
+        this.onExit({ wasReady: false, code: null, signal: null, retryable: false })
+      })
+      return
+    }
     console.log('[desktop] dsh runtime: ' + dsh.source + ' (' + dsh.label + ')')
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
@@ -225,7 +318,7 @@ class WebUiManager {
       if (exitReported) return
       exitReported = true
       if (this.generation === gen) this.generation = undefined
-      this.onExit({ wasReady: gen.readyReported, code, signal })
+      this.onExit({ wasReady: gen.readyReported, code, signal, retryable: true })
     }
 
     // Line framing across chunk boundaries: a readiness line split by the
@@ -314,6 +407,8 @@ class WebUiManager {
 let mainWindow: BrowserWindow | null = null
 /** Whether a caller is waiting for the main window, as opposed to tray-only recovery. */
 let mainWindowRequested = false
+/** Whether the main window still shows the local loading document. */
+let loadingDocumentActive = false
 let settingsWindow: BrowserWindow | null = null
 let settingsServerPort = 0
 /** Bearer-like unguessable path: loopback binding alone is not authorization. */
@@ -456,8 +551,71 @@ function scheduleWindowHealthCheck(reason: string, delayMs = 1_000): void {
 /** The official DeepSeek Harness logo: rounded-corner dark tile with the white glyph. */
 const ICON_PNG = join(APP_DIR, 'resources', 'icon-app.png')
 
-/** Create the client window pointed at the official Web UI. */
-function createWindow(url: string): void {
+/**
+ * The logo as an inline data URI, or an empty tag when the resource cannot be
+ * read: the first window is now on the startup path, so a missing icon must
+ * degrade to a plain loading page rather than abort the launch.
+ */
+function loadingIconTag(): string {
+  try {
+    return '<img class="mark" alt="" src="data:image/png;base64,' + readFileSync(ICON_PNG).toString('base64') + '">'
+  } catch (error) {
+    console.warn('[desktop] loading icon unavailable:', error instanceof Error ? error.message : String(error))
+    return ''
+  }
+}
+
+/** The small first-paint surface shown while Smart mode resolves the Web UI. */
+function loadingPageUrl(): string {
+  const chinese = app.getLocale().toLowerCase().startsWith('zh')
+  const title = chinese ? '正在启动 DeepSeek Harness' : 'Starting DeepSeek Harness'
+  const detail = chinese ? '正在准备本地服务…' : 'Preparing the local service…'
+  const hint = chinese ? '首次启动可能需要几秒钟' : 'The first launch may take a few seconds'
+  const html = '<!doctype html><html lang="' + (chinese ? 'zh-CN' : 'en') + '"><head><meta charset="utf-8">'
+    + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'">'
+    + '<meta name="color-scheme" content="light dark"><title>' + title + '</title><style>'
+    + ':root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}'
+    + '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff;color:#0f1115}'
+    + 'main{width:min(360px,calc(100vw - 48px));text-align:center}.mark{width:64px;height:64px;border-radius:16px;box-shadow:0 12px 32px rgba(15,17,21,.14)}'
+    + 'h1{margin:22px 0 8px;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.01em}'
+    + '#loading-status{margin:0;color:#6e7480;font-size:14px;line-height:22px}.hint{margin:8px 0 0;color:#9aa0a6;font-size:12px;line-height:18px}'
+    + '.activity{height:20px;margin:20px auto 0;display:flex;justify-content:center;align-items:center;gap:6px}'
+    // An author rule beats the UA stylesheet, so [hidden] needs restating here.
+    + '.activity[hidden],.hint[hidden]{display:none}'
+    + '.activity i{display:block;width:5px;height:5px;border-radius:50%;background:#0f1115;animation:pulse 1.2s ease-in-out infinite}'
+    + '.activity i:nth-child(2){animation-delay:.16s}.activity i:nth-child(3){animation-delay:.32s}'
+    + '@keyframes pulse{0%,70%,100%{opacity:.18;transform:translateY(0)}35%{opacity:1;transform:translateY(-3px)}}'
+    + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}#loading-status{color:#aeb3bb}.hint{color:#818791}.activity i{background:#f4f5f6}}'
+    + '@media(prefers-reduced-motion:reduce){.activity i{animation:none}.activity i:nth-child(2){opacity:.5}.activity i:nth-child(3){opacity:.8}}'
+    + '</style></head><body><main>' + loadingIconTag()
+    + '<h1>' + title + '</h1><p id="loading-status">' + detail + '</p><p class="hint">' + hint + '</p>'
+    + '<div class="activity" aria-hidden="true"><i></i><i></i><i></i></div></main></body></html>'
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
+}
+
+/**
+ * Update the loading document's status line. The 'failed' state also withdraws
+ * the activity indicator and the "may take a few seconds" hint: a launch that
+ * cannot proceed must not keep animating, nor keep promising progress.
+ */
+function updateLoadingStatus(chinese: string, english: string, state: 'busy' | 'failed' = 'busy'): void {
+  const window = mainWindow
+  // Not webContents.getURL(): it stays empty until the data document commits,
+  // which is exactly when the first status update is issued. Electron holds
+  // the script until the page stops loading, so an early call still lands.
+  if (!loadingDocumentActive || window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
+  const message = app.getLocale().toLowerCase().startsWith('zh') ? chinese : english
+  const failed = String(state === 'failed')
+  void window.webContents.executeJavaScript(
+    `document.getElementById('loading-status')?.replaceChildren(${JSON.stringify(message)});`
+    + `document.querySelector('.activity')?.toggleAttribute('hidden', ${failed});`
+    + `document.querySelector('.hint')?.toggleAttribute('hidden', ${failed});`,
+    true,
+  ).catch(() => {})
+}
+
+/** Create the client window immediately; the official Web UI replaces its loading surface when ready. */
+function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -485,6 +643,7 @@ function createWindow(url: string): void {
   mainWindow.on('closed', () => {
     mainWindow = null
     mainWindowRequested = false
+    loadingDocumentActive = false
   })
   // The official Web UI is loaded; anything it tries to open elsewhere goes
   // to the system browser, and no new windows exist.
@@ -502,7 +661,7 @@ function createWindow(url: string): void {
   // An unreachable Web UI (connect mode) must not strand the user: offer
   // retry or the connection-settings window.
   mainWindow.webContents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
-    if (!isMainFrame || quitting || code === -3) return // -3 = ERR_ABORTED
+    if (!isMainFrame || quitting || code === -3 || failedUrl.startsWith('data:')) return // -3 = ERR_ABORTED
     void dialog.showMessageBox(mainWindow as BrowserWindow, {
       type: 'error',
       title: 'Harness',
@@ -529,7 +688,16 @@ function createWindow(url: string): void {
     }, 30_000).unref()
   })
   mainWindow.on('responsive', () => { rendererUnresponsive = false })
-  void mainWindow.loadURL(url)
+  loadingDocumentActive = true
+  void mainWindow.loadURL(loadingPageUrl()).catch(() => {})
+}
+
+/** Navigate the existing loading/client window to one official Web UI origin. */
+function loadMainWindow(url: string): void {
+  if (mainWindow === null) createWindow()
+  if (mainWindow === null || appOrigin(mainWindow.webContents.getURL()) === appOrigin(url)) return
+  loadingDocumentActive = false
+  void mainWindow.loadURL(url).catch(() => { /* did-fail-load owns user recovery */ })
 }
 
 /** The small connection-settings window (menu → "Web UI 连接…"). */
@@ -711,22 +879,28 @@ function resolveRuntime(): void {
 function launchWindow(generation = connectionGeneration): void {
   if (generation !== connectionGeneration || quitting) return
   mainWindowRequested = true
+  if (mainWindow === null) createWindow()
   if (configuredTarget !== undefined) {
-    if (mainWindow === null) {
-      createWindow(configuredTarget)
-    } else if (appOrigin(mainWindow.webContents.getURL()) !== appOrigin(configuredTarget)) {
-      void mainWindow.loadURL(configuredTarget)
-    }
+    updateLoadingStatus('正在连接 Web UI…', 'Connecting to the Web UI…')
+    loadMainWindow(configuredTarget)
     return
   }
+  updateLoadingStatus('正在启动本地 dsh 服务…', 'Starting the local dsh service…')
   void webUi?.ready().then((url) => {
     if (generation !== connectionGeneration || quitting) return
     console.log('[desktop] dsh runtime ready: ' + url)
     childTarget = url
     launchBudget = MAX_LAUNCH_RETRIES
-    if (mainWindow === null) createWindow(url)
-    else if (configuredTarget === undefined) void mainWindow.loadURL(url)
-  }, () => { /* startup failure is owned by the onExit path */ })
+    if (!mainWindowRequested) return
+    if (configuredTarget === undefined) loadMainWindow(url)
+  }, () => {
+    // The first failure raised its dialog through onExit. A repeat request
+    // (dock activate, second instance) rejects without one, so the loading
+    // surface must carry the state instead of spinning forever.
+    if (generation !== connectionGeneration || quitting) return
+    updateLoadingStatus('本地服务启动失败。请从菜单打开「Web UI 连接…」。',
+      'The local service failed to start. Open “Web UI connection…” from the menu.', 'failed')
+  })
 }
 
 /** The application menu: standard roles plus the connection-settings seat. */
@@ -842,18 +1016,41 @@ function startSettingsServer(): Promise<number> {
   })
 }
 
+function showLocalRuntimeStartupFailure(code: number | null, signal: NodeJS.Signals | null): void {
+  const reason = webUi?.lastError
+  updateLoadingStatus('本地服务启动失败。请从菜单打开「Web UI 连接…」。',
+    'The local service failed to start. Open “Web UI connection…” from the menu.', 'failed')
+  const options = {
+    type: 'error' as const,
+    title: 'Harness',
+    message: '本地服务无法启动',
+    detail: (reason !== null && reason !== undefined ? reason + '\n' : '')
+      + '运行结果：' + String(code) + ' / ' + String(signal) + '。\n'
+      + '请重新安装完整客户端，或在「Web UI 连接…」中填写另一个可用地址。',
+    buttons: ['Web UI 连接…', '退出'],
+    defaultId: 0,
+    cancelId: 1,
+  }
+  const owner = mainWindow
+  const result = owner === null ? dialog.showMessageBox(options) : dialog.showMessageBox(owner, options)
+  void result.then(({ response }) => {
+    if (response === 0) openSettingsWindow()
+    else app.quit()
+  })
+}
+
 function boot(): void {
   const settings = loadSettings()
   webUi = new WebUiManager(
     (line) => { console.log('[dsh web] ' + line) },
-    ({ wasReady, code, signal }) => {
+    ({ wasReady, code, signal, retryable }) => {
       if (quitting) return
       if (configuredTarget !== undefined) {
         // Connect/probe mode: a child exit is irrelevant (there should be none).
         return
       }
       childTarget = undefined
-      if (mainWindow === null && launchBudget > 0) {
+      if (!wasReady && retryable && launchBudget > 0) {
         launchBudget -= 1
         const delayMs = relaunchDelayMs(launchBudget)
         const generation = connectionGeneration
@@ -861,6 +1058,7 @@ function boot(): void {
           + '); relaunching in ' + String(delayMs) + 'ms (' + String(launchBudget) + ' left)')
         setTimeout(() => {
           if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
+          updateLoadingStatus('本地服务启动失败，正在重试…', 'The local service did not start; retrying…')
           webUi?.spawn()
           if (mainWindowRequested) {
             launchWindow(generation)
@@ -877,24 +1075,23 @@ function boot(): void {
         }, delayMs)
         return
       }
-      if (mainWindow === null) {
+      if (!wasReady) {
         console.error('[desktop] dsh web failed to start (' + String(code) + '/' + String(signal) + '); no relaunches left')
-        const reason = webUi?.lastError
-        dialog.showErrorBox('Harness', '本地 dsh web 启动失败（代码 ' + String(code) + ' / 信号 ' + String(signal) + '）。\n'
-          + (reason !== null && reason !== undefined ? reason + '\n' : '')
-          + '安装包内置运行时不可用。请重新安装客户端，或通过菜单 "Web UI 连接…" 填写另一个 Web UI 地址。')
-        app.quit()
+        showLocalRuntimeStartupFailure(code, signal)
         return
       }
       // A live window lost its runtime: fatal.
       console.error('[desktop] dsh web exited (' + String(code) + '/' + String(signal) + ')')
-      void dialog.showMessageBox(mainWindow, {
+      const options: Electron.MessageBoxOptions = {
         type: 'error',
         title: 'Harness',
         message: '运行时意外退出',
         detail: '代码 ' + String(code) + ' / 信号 ' + String(signal) + '。',
         buttons: ['退出'],
-      }).then(() => { app.quit() })
+      }
+      const owner = mainWindow
+      const result = owner === null ? dialog.showMessageBox(options) : dialog.showMessageBox(owner, options)
+      void result.then(() => { app.quit() })
     },
   )
 
@@ -929,6 +1126,11 @@ if (!gotLock) {
       const dockIcon = nativeImage.createFromPath(ICON_PNG)
       if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
     }
+    // Paint immediately. Runtime probing/boot continues behind this one window
+    // and replaces the loading document with the official Web UI when ready.
+    mainWindowRequested = true
+    createWindow()
+    const guiPathReady = restoreMacGuiPath()
     await startSettingsServer()
     installMenu()
     createTray()
@@ -950,6 +1152,7 @@ if (!gotLock) {
       }
     })
     ipcMain.on('desktop:open-connection-settings', () => { openSettingsWindow() })
+    await guiPathReady
     boot()
     app.on('activate', () => {
       if (mainWindow === null) launchWindow()

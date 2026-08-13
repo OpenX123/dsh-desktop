@@ -46,6 +46,11 @@ Download the package for your system from [GitHub Releases](https://github.com/b
 
 Automated packages are currently unsigned on macOS and Windows. The operating system may show a first-launch security warning; until signing and notarization are configured, this remains a known limitation of the “download and run” experience. Download only from this repository and verify the included `SHA256SUMS.txt`.
 
+#### If the operating system blocks the first launch
+
+- **macOS:** Double-click the app once so macOS records the blocked attempt. Then open **System Settings → Privacy & Security**, find the Security section, choose **Open Anyway**, and enter your login password. The button is available only for a limited time after the launch attempt. See [Apple's official instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+- **Windows:** If Microsoft Defender SmartScreen shows a protection prompt, first verify the download source and SHA-256 checksum. Then choose **More info → Run anyway** only if they match.
+
 ### Run from source
 
 Source development requires Node.js `^22.19.0 || >=24.0.0` and [pnpm](https://pnpm.io/). A separate `dsh` installation is not required.
@@ -66,11 +71,14 @@ If the bundled runtime cannot start, or you want to use another instance, open t
 
 ### First conversation
 
-1. Open **Settings** at the bottom of the sidebar.
-2. Enter your `DEEPSEEK_API_KEY` and save it. The official Web UI manages the credential under `DSH_HOME`; it is not stored in the desktop connection settings.
+1. On first launch, enter your key in **Add an API key to get started**. You can also choose **Configure later** and return through **Settings → Models → DeepSeek**.
+2. If you do not have a key, use **Create one on the DeepSeek platform** below the field; it opens <https://platform.deepseek.com/api_keys> in your system browser. The link is a desktop-client enhancement. DeepSeek manages the API account, balance, and usage charges.
 3. Optionally choose a default Agent preset or model.
 4. Add a project folder for workspace-aware tasks, or start a conversation directly.
 5. Describe the outcome you want and send the message.
+
+> [!TIP]
+> With a fresh data directory, the official Web UI may initially appear in English. Use **Settings → General → Language** to switch languages.
 
 ## Two connection modes
 
@@ -108,6 +116,7 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 - Quit from the tray menu, application menu, or `Cmd+Q` on macOS.
 - If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
 - If the page is unexpectedly blank after system resume or a long idle, the client verifies the Web UI and reloads it automatically.
+- Before starting the local service, the packaged macOS app reads the user's login-shell `PATH` once with a three-second deadline and merges only absolute directories. This keeps Homebrew and version-manager tools available to Agents when the app starts from Finder or the Dock.
 
 ## Development
 

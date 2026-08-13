@@ -54,11 +54,12 @@ const emptyPath = join(smokeHome, 'empty-path')
 // deduplication could keep either one. Strip every casing first, so this smoke
 // really runs with no system PATH on all platforms. `ELECTRON_RUN_AS_NODE`
 // (Codex and some CI wrappers set it) is uppercase everywhere, but goes
-// through the same filter for consistency.
+// through the same filter for consistency. `DSH_DESKTOP_SKIP_LOGIN_PATH` goes
+// too: an inherited opt-out would suppress the very restore this smoke asserts.
 const childEnv = {}
 for (const [key, value] of Object.entries(process.env)) {
   const upper = key.toUpperCase()
-  if (upper === 'PATH' || upper === 'ELECTRON_RUN_AS_NODE') continue
+  if (upper === 'PATH' || upper === 'ELECTRON_RUN_AS_NODE' || upper === 'DSH_DESKTOP_SKIP_LOGIN_PATH') continue
   childEnv[key] = value
 }
 const child = spawn(executable, ['--user-data-dir=' + join(smokeHome, 'chromium')], {
@@ -106,6 +107,9 @@ try {
   if (!output.includes('[desktop] dsh runtime: bundled')) {
     throw new Error('packaged app did not select the bundled dsh runtime')
   }
+  if (process.platform === 'darwin' && !output.includes('[desktop] restored PATH from the macOS login shell')) {
+    throw new Error('packaged macOS app did not restore its login-shell PATH')
+  }
   const response = await fetch(url + '/api/host.describe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -115,6 +119,7 @@ try {
   const body = await response.json()
   if (!response.ok || body?.result?.ok !== true) throw new Error('packaged Web UI probe failed')
   console.log('✓ packaged app selected its bundled @deepseek-ai/dsh runtime')
+  if (process.platform === 'darwin') console.log('✓ packaged app restored the macOS login-shell PATH')
   console.log('✓ packaged Web UI answered host.describe at ' + url)
 } catch (error) {
   console.error(output)

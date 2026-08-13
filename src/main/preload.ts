@@ -127,17 +127,17 @@ function injectEnhance(panel: Element): void {
     // text #6E7480 13px, inputs 13px/8px radius/#D8D8D4, ghost buttons 28px.
     style.textContent = [
       '#' + ENHANCE_ID + '{margin:0;padding:16px 0}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:#0F1115}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:#0F1115;background:#EBEEF2;border-radius:999px;padding:2px 8px}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-status{margin:0 0 12px;font-size:13px;color:#6E7480}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-version{margin:0 0 12px;font-size:12px;color:#8A9099}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:var(--dsw-alias-label-primary,#0F1115)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:var(--dsw-alias-label-primary,#0F1115);background:var(--dsw-alias-bg-module-platform,#EBEEF2);border-radius:999px;padding:2px 8px}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-status{margin:0 0 12px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-version{margin:0 0 12px;font-size:12px;color:var(--dsw-alias-label-tertiary,#8A9099)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-row{display:flex;gap:8px;align-items:center}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-input{flex:1;min-width:0;background:#fff;border:1px solid #D8D8D4;border-radius:8px;padding:6px 10px;font-size:13px;color:#0F1115;outline:none}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-input:focus{border-color:#0F1115}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-input::placeholder{color:#9AA0A6}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-save{white-space:nowrap;background:transparent;border:1px solid #D8D8D4;border-radius:28px;padding:6px 16px;font-size:13px;color:#0F1115;cursor:pointer;transition:background .15s ease}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-save:hover{background:#F5F6F7}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-note{margin:10px 0 0;font-size:13px;color:#6E7480}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-input{flex:1;min-width:0;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:8px;padding:6px 10px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);outline:none}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-input:focus{border-color:var(--dsw-alias-brand-primary,#0F1115)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-input::placeholder{color:var(--dsw-alias-label-dimmed,#9AA0A6)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-save{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-save:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-note{margin:10px 0 0;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
     ].join('')
     document.head.appendChild(style)
   }
@@ -173,6 +173,77 @@ function injectEnhance(panel: Element): void {
   panel.appendChild(block)
 }
 
+// ---------------------------------------------------------------------------
+// "Where do I get a key?" line under the OFFICIAL DeepSeek credential field.
+//
+// The official first-run modal ("添加一个 API Key 开始使用") and the Models
+// provider editor both ask for a key without saying where to create one, which
+// strands a user who has never visited the platform. One appended line, same
+// append-only rule as the card above: DeepSeek surfaces only, silently absent
+// when the heuristic misses. The anchor opens through the main process's
+// window-open handler, i.e. in the system browser.
+// ---------------------------------------------------------------------------
+
+const KEY_HELP_CLASS = 'dsh-desktop-key-help'
+const DEEPSEEK_KEY_URL = 'https://platform.deepseek.com/api_keys'
+
+/**
+ * The container to append the hint to: the credential field's own row, but
+ * only when its nearest provider card is the official DeepSeek card, or the
+ * field belongs to the dedicated first-run DeepSeek dialog. Never climb to
+ * the whole Models section: that section also contains custom-provider forms.
+ */
+function keyHelpHost(input: HTMLInputElement): Element | null {
+  const row = input.parentElement
+  if (row === null) return null
+
+  const providerCard = input.closest('li')
+  if (providerCard !== null) {
+    return /deepseek-official/i.test(providerCard.textContent ?? '') ? row : null
+  }
+
+  const dialog = input.closest('[role="dialog"]')
+  const dialogText = dialog?.textContent ?? ''
+  if (/official DeepSeek provider|DeepSeek 官方模型/i.test(dialogText)) return row
+  return null
+}
+
+/** Append the platform link under every visible DeepSeek key field. */
+function injectKeyHelp(): void {
+  const inputs = document.querySelectorAll('input[type="password"]')
+  if (inputs.length === 0) return
+
+  if (document.getElementById(KEY_HELP_CLASS + '-style') === null) {
+    const style = document.createElement('style')
+    style.id = KEY_HELP_CLASS + '-style'
+    // Official secondary-text language, via the official theme variables so
+    // the line follows the appearance setting (light/dark/system).
+    style.textContent = '.' + KEY_HELP_CLASS + '{margin:8px 0 0;font-size:13px;line-height:20px;'
+      + 'color:var(--dsw-alias-label-secondary,#6E7480)}'
+      + '.' + KEY_HELP_CLASS + ' a{color:var(--dsw-alias-label-primary,#0F1115);text-decoration:underline;cursor:pointer}'
+    document.head.appendChild(style)
+  }
+
+  for (const element of inputs) {
+    const input = element as HTMLInputElement
+    if (!visible(input)) continue
+    const host = keyHelpHost(input)
+    if (host === null || host.querySelector('.' + KEY_HELP_CLASS) !== null) continue
+    // The official copy follows the language setting; match it off the field's
+    // own placeholder rather than a document-level guess.
+    const english = /^Enter (your |an )?API key/i.test(input.placeholder)
+    const help = document.createElement('p')
+    help.className = KEY_HELP_CLASS
+    const anchor = document.createElement('a')
+    anchor.href = DEEPSEEK_KEY_URL
+    anchor.target = '_blank'
+    anchor.rel = 'noreferrer'
+    anchor.textContent = english ? 'Create one on the DeepSeek platform' : '前往 DeepSeek 开放平台创建'
+    help.append(english ? 'No API key yet? ' : '还没有 API Key？', anchor)
+    host.appendChild(help)
+  }
+}
+
 let watching = false
 
 /** Watch for the official settings dialog and keep the card injected. */
@@ -180,15 +251,39 @@ function watchSettingsDialog(): void {
   if (watching) return
   watching = true
   const probe = (): void => {
-    const dialog = findSettingsDialog()
-    if (dialog === null) return
-    if (!isGeneralTab(dialog)) return
-    const options = findOptions(dialog)
-    if (options === null) return
-    const panel = findVisiblePanel(options)
+    injectKeyHelp()
+    // The block belongs to the general tab's panel only. React does not always
+    // replace that panel on a tab switch, so an injection that is never
+    // withdrawn leaks the card onto another tab (where it reads as a misplaced
+    // official row). Withdraw it whenever its seat is no longer showing.
+    const panel = generalPanel()
+    const existing = document.getElementById(ENHANCE_ID)
+    if (panel === null || (existing !== null && existing.parentElement !== panel)) existing?.remove()
     if (panel !== null) injectEnhance(panel)
   }
-  new MutationObserver(probe).observe(document.documentElement, { childList: true, subtree: true })
+
+  /** The visible general-tab panel of the open settings dialog, when that is what is showing. */
+  const generalPanel = (): Element | null => {
+    const dialog = findSettingsDialog()
+    if (dialog === null || !isGeneralTab(dialog)) return null
+    const options = findOptions(dialog)
+    if (options === null) return null
+    return findVisiblePanel(options)
+  }
+  // The observer sees every mutation of a streaming chat surface, and a probe
+  // measures element boxes. Running one per animation frame both collapses
+  // bursts and moves the reads to a point where layout is already clean,
+  // instead of forcing a synchronous relayout inside the observer callback.
+  let scheduled = false
+  const scheduleProbe = (): void => {
+    if (scheduled) return
+    scheduled = true
+    requestAnimationFrame(() => {
+      scheduled = false
+      probe()
+    })
+  }
+  new MutationObserver(scheduleProbe).observe(document.documentElement, { childList: true, subtree: true })
   probe()
 }
 

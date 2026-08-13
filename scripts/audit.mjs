@@ -7,7 +7,9 @@
  * @module desktop/scripts/audit
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright-core'
@@ -15,47 +17,64 @@ import { _electron as electron } from 'playwright-core'
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const desktopVersion = JSON.parse(readFileSync(join(APP_DIR, 'package.json'), 'utf8')).version
 const dshVersion = JSON.parse(readFileSync(join(APP_DIR, 'dsh-runtime', 'package.json'), 'utf8')).dependencies['@deepseek-ai/dsh']
+const auditHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-audit-'))
+process.on('exit', () => { rmSync(auditHome, { recursive: true, force: true }) })
 const electronEnv = { ...process.env }
 Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
+electronEnv.DSH_HOME = join(auditHome, 'dsh')
+electronEnv.DSH_DESKTOP_HOME = join(auditHome, 'desktop')
+electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
 
-const app = await electron.launch({ args: [join(APP_DIR, '.build', 'main.mjs')], env: electronEnv })
+const app = await electron.launch({
+  args: [join(APP_DIR, '.build', 'main.mjs'), '--user-data-dir=' + join(auditHome, 'chromium')],
+  env: electronEnv,
+})
 const window = await app.firstWindow()
 const pageErrors = []
 window.on('pageerror', err => { pageErrors.push(err.message) })
-
-await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
-await window.waitForTimeout(3000)
-
-// A fresh DSH_HOME opens the official onboarding overlay. Advance it before
-// testing controls underneath so this smoke represents a real first install.
-for (let step = 0; step < 8; step += 1) {
-  const onboarding = window.locator('[class*="onboardingOverlay"]').last()
-  if (!await onboarding.isVisible().catch(() => false)) break
-  const buttons = onboarding.getByRole('button')
-  const count = await buttons.count()
-  if (count === 0) break
-  await buttons.nth(count - 1).click()
-  await window.waitForTimeout(500)
-}
-await window.waitForFunction(() => document.querySelector('[class*="onboardingOverlay"]') === null, { timeout: 30000 })
-// Completing onboarding may open a second guided modal. Follow its primary
-// action just as a first-time user would, then dismiss any optional dialog.
-for (let step = 0; step < 8; step += 1) {
-  const mask = window.locator('div[aria-hidden="true"][class*="_mask_"]').last()
-  if (!await mask.isVisible().catch(() => false)) break
-  const modal = window.locator('[role="presentation"]').filter({ visible: true }).last()
-  const buttons = modal.locator('button:not([disabled])').filter({ visible: true })
-  const count = await buttons.count()
-  if (count > 0) {
-    await buttons.nth(count - 1).click()
-  } else {
-    await window.keyboard.press('Escape')
-  }
-  await window.waitForTimeout(500)
-}
-
 const checks = []
 const check = (name, ok, detail) => checks.push({ ok, name, detail })
+
+const DEEPSEEK_KEY_URL = 'https://platform.deepseek.com/api_keys'
+/** Assert exactly one key-help link, pointing at the platform page. */
+const checkKeyHelpLink = async (name, locator) => {
+  const count = await locator.count()
+  const href = count === 1 ? await locator.first().getAttribute('href') : null
+  check(name, href === DEEPSEEK_KEY_URL, href ?? 'count=' + String(count))
+}
+
+// The app must paint before the local runtime is ready, otherwise a Finder or
+// Dock launch appears to do nothing for several seconds.
+const loadingVisible = await window.locator('#loading-status').waitFor({ state: 'visible', timeout: 3000 })
+  .then(() => true, () => false)
+check('startup loading window', loadingVisible, '#loading-status')
+
+await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
+await window.waitForTimeout(1500)
+
+// A clean profile first shows the official notice, then the DeepSeek key
+// prompt. Verify our help at the moment a new user needs it and choose the
+// supported "later" path without storing a credential.
+let keyPromptReached = false
+for (let step = 0; step < 8; step += 1) {
+  const dialog = window.locator('[role="dialog"]:visible').last()
+  if (!await dialog.isVisible().catch(() => false)) break
+  const keyInput = dialog.locator('input[type="password"]')
+  if (await keyInput.count() > 0) {
+    keyPromptReached = true
+    await checkKeyHelpLink('first-run DeepSeek key link', dialog.locator('.dsh-desktop-key-help a'))
+    const later = dialog.getByRole('button', { name: /稍后配置|Configure later/i })
+    if (await later.count() > 0) await later.click()
+    break
+  }
+  const next = dialog.getByRole('button', { name: /继续|Continue/i })
+  if (await next.count() === 0) break
+  await next.click()
+  await window.waitForTimeout(500)
+}
+// Without this the walk above can stop early — an onboarding relabel, say —
+// and silently take its assertion with it, leaving the audit green.
+check('first-run key prompt reached', keyPromptReached, 'onboarding walked to the DeepSeek key step')
 
 const title = await window.title()
 check('official web ui title', /deepseek harness/i.test(title), title)
@@ -85,16 +104,57 @@ const publicSettingsResponse = await fetch(settingsUrl.origin + '/desktop/settin
 check('public settings path rejected', publicSettingsResponse.status === 404, String(publicSettingsResponse.status))
 await settingsPage.close()
 
-// The release runtime uses the stock published Web UI. Its Settings dialog
-// must remain operable; desktop connection controls live in the native page
-// verified above rather than in a source-checkout-only DOM patch.
+// The official settings dialog remains operable around both append-only
+// enhancements. Verify positive and negative seats across real tab switches.
 await window.getByRole('button', { name: /设置|Settings/ }).first().click()
-const settingsDialogVisible = await window.locator('[role="presentation"]').filter({ visible: true }).last().waitFor({ state: 'visible', timeout: 3000 })
+const settingsDialog = window.locator('[role="dialog"]:visible').last()
+const settingsDialogVisible = await settingsDialog.waitFor({ state: 'visible', timeout: 3000 })
   .then(() => true, () => false)
 check('official settings dialog', settingsDialogVisible, '[role="presentation"]')
-const enhancedCardVisible = await window.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3000 })
+const enhancedCardVisible = await settingsDialog.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3000 })
   .then(() => true, () => false)
 check('desktop connection card', enhancedCardVisible, '#dsh-desktop-enhance')
+
+// Exercise the official appearance control, rather than emulating an OS media
+// query: the UI owns its theme state and provides the tokens our card consumes.
+await settingsDialog.getByRole('button', { name: /深色|Dark/ }).click()
+await window.waitForTimeout(200)
+const darkThemeTokens = await settingsDialog.locator('#dsh-desktop-enhance').evaluate(card => {
+  const cardStyle = getComputedStyle(card)
+  const title = card.querySelector('.dsh-enhance-title')
+  const input = card.querySelector('.dsh-enhance-input')
+  return {
+    title: title ? getComputedStyle(title).color : '',
+    titleToken: cardStyle.getPropertyValue('--dsw-alias-label-primary').trim(),
+    input: input ? getComputedStyle(input).backgroundColor : '',
+    inputToken: cardStyle.getPropertyValue('--dsw-alias-bg-layer-1').trim(),
+  }
+})
+check('connection card follows dark theme tokens',
+  darkThemeTokens.title !== '' && darkThemeTokens.title === darkThemeTokens.titleToken
+    && darkThemeTokens.input !== '' && darkThemeTokens.input === darkThemeTokens.inputToken,
+  JSON.stringify(darkThemeTokens))
+
+await settingsDialog.getByRole('button', { name: /模型|Models/ }).click()
+await window.waitForTimeout(200)
+check('connection card leaves Models tab', await settingsDialog.locator('#dsh-desktop-enhance').count() === 0, 'Models')
+const deepSeekHelp = settingsDialog.locator('.dsh-desktop-key-help a')
+await checkKeyHelpLink('DeepSeek settings key link', deepSeekHelp)
+
+await settingsDialog.getByRole('button', { name: /添加自定义提供方|Add a custom provider/i }).click()
+await window.waitForTimeout(200)
+const customKey = settingsDialog.locator('input[type="password"]').last()
+const customHelpCount = await customKey.locator('xpath=..').locator('.dsh-desktop-key-help').count()
+check('custom provider has no DeepSeek link', customHelpCount === 0, String(customHelpCount))
+const deepSeekHelpCount = await deepSeekHelp.count()
+check('custom provider does not duplicate key link', deepSeekHelpCount === 1, String(deepSeekHelpCount))
+
+await settingsDialog.getByRole('button', { name: /通用设置|General(?: Settings)?/ }).click()
+await window.waitForTimeout(200)
+check('connection card returns to General tab', await settingsDialog.locator('#dsh-desktop-enhance').count() === 1, 'General')
+await settingsDialog.getByRole('button', { name: /插件|Plugins/ }).click()
+await window.waitForTimeout(200)
+check('connection card leaves Plugins tab', await settingsDialog.locator('#dsh-desktop-enhance').count() === 0, 'Plugins')
 await window.keyboard.press('Escape')
 
 let failures = 0

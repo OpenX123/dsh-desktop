@@ -46,6 +46,11 @@ DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启
 
 当前自动构建的安装包尚未进行 macOS/Windows 代码签名。操作系统可能在首次启动时显示安全警告；在签名与公证配置完成前，这仍是“直接下载即可运行”的已知发布限制。请只从本仓库 Release 下载，并使用随附的 `SHA256SUMS.txt` 校验文件。
 
+#### 首次打开被系统拦截时
+
+- **macOS**：先双击应用并让系统显示一次拦截提示，然后打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」并输入登录密码。该按钮只会在尝试打开后的一段时间内出现。详见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+- **Windows**：如果 Microsoft Defender SmartScreen 显示保护提示，请先核对下载来源和 SHA-256，确认后选择「更多信息 → 仍要运行」。
+
 ### 从源码运行
 
 源码开发需要 Node.js `^22.19.0 || >=24.0.0` 和 [pnpm](https://pnpm.io/zh/)；不需要另外安装 `dsh`。
@@ -66,11 +71,14 @@ pnpm run dev
 
 ### 开始第一次对话
 
-1. 点击侧栏底部的**「设置」**。
-2. 填写并保存 `DEEPSEEK_API_KEY`。凭据由官方 Web UI 管理并写入 `DSH_HOME`，不会进入桌面端的连接设置。
+1. 首次启动时，在「添加一个 API Key 开始使用」引导中填写密钥；也可以选择「稍后配置」，之后从「设置 → 模型 → DeepSeek」完成。
+2. 还没有 Key 时，点击输入框下方的「前往 DeepSeek 开放平台创建」，系统浏览器会打开 <https://platform.deepseek.com/api_keys>。该链接是本项目的桌面增强；API 账户、余额与费用由 DeepSeek 开放平台管理。
 3. 根据需要选择默认 Agent 预设或模型。
 4. 若任务需要读写文件，先添加一个项目文件夹；也可以直接新建会话。
 5. 描述希望 Agent 完成的结果，然后发送消息。
+
+> [!TIP]
+> 全新数据目录下，官方 Web UI 可能默认显示英文。可从 **Settings → General → Language** 切换为中文。
 
 ## 两种连接方式
 
@@ -108,6 +116,7 @@ Electron 窗口已开启上下文隔离与沙箱、关闭 Node 集成，将页�
 - 可通过托盘菜单、应用菜单或 macOS 的 `Cmd+Q` 完全退出。
 - 本地 Web UI 意外退出时，客户端只会进行有限次数的重启，不会无限循环。
 - 系统唤醒或长时间后台运行后若页面异常空白，客户端会在确认 Web UI 可达后自动重新加载。
+- macOS 发布版会在启动本地服务前读取一次用户的登录 shell `PATH`（最长等待 3 秒），只合并绝对路径目录，使 Agent 从 Finder/Dock 启动时仍能找到 Homebrew 和版本管理器中的工具。
 
 ## 开发与验证
 
