@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要构建的已有版本 tag，例如 v0.0.1-rc.1 / Existing release tag"
+        description: "要构建的已有版本 tag，例如 v0.1.0 / Existing release tag"
         required: true
         type: string
 
@@ -98,12 +98,15 @@ jobs:
           - name: macOS Universal
             os: macos-latest
             command: pnpm exec electron-builder --mac dmg zip --universal --publish never
+            smoke: pnpm run smoke:package
           - name: Windows x64
             os: windows-latest
             command: pnpm exec electron-builder --win nsis zip --x64 --publish never
+            smoke: pnpm run smoke:package
           - name: Linux x64
             os: ubuntu-latest
             command: pnpm exec electron-builder --linux AppImage deb --x64 --publish never
+            smoke: xvfb-run -a pnpm run smoke:package
 
     steps:
       - name: 检出 tag / Checkout tag
@@ -126,12 +129,68 @@ jobs:
       - name: 构建应用 / Build application
         run: pnpm run build
 
+      - name: 准备内置 dsh 运行时 / Prepare bundled dsh runtime
+        run: pnpm run prepare:runtime
+
       - name: 生成安装包 / Package application
         run: ${{ matrix.command }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      - name: 验证安装包内置运行时 / Smoke packaged runtime
+        run: ${{ matrix.smoke }}
+
+      - name: 验证 Windows NSIS 实际安装结果 / Smoke installed Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path release -File -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw 'NSIS installer not found under release/'
+          }
+
+          $installDir = Join-Path $env:RUNNER_TEMP ('dsh-desktop-nsis-' + [guid]::NewGuid().ToString('N'))
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "NSIS installer exited with code $($install.ExitCode)"
+          }
+
+          $executable = Join-Path $installDir 'DeepSeek Harness Desktop.exe'
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Installed executable not found: $executable"
+          }
+          pnpm run smoke:package -- "$executable"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed NSIS runtime smoke failed with code $LASTEXITCODE"
+          }
+
+      - name: 验证 Windows ZIP 解压结果 / Smoke extracted Windows ZIP runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Get-ChildItem -Path release -File -Filter '*.zip' | Select-Object -First 1
+          if ($null -eq $archive) {
+            throw 'Windows ZIP package not found under release/'
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP ('dsh-desktop-zip-' + [guid]::NewGuid().ToString('N'))
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extractDir
+          $executable = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'DeepSeek Harness Desktop.exe' | Select-Object -First 1
+          if ($null -eq $executable) {
+            throw "Extracted executable not found under $extractDir"
+          }
+          pnpm run smoke:package -- "$($executable.FullName)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Extracted ZIP runtime smoke failed with code $LASTEXITCODE"
+          }
+
+      # Runs even when a smoke step failed: the packages are what a failure
+      # has to be diagnosed from. A failed job still blocks the release,
+      # because the publish job depends on this one succeeding.
       - name: 上传构建产物 / Upload artifacts
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dsh-desktop-${{ matrix.os }}
@@ -186,13 +245,15 @@ jobs:
           set -euo pipefail
 
           cat > release-notes.md <<'EOF'
+          > **非官方项目 / Unofficial project:** 此桌面客户端由社区独立维护，并非 DeepSeek 官方产品，也不由 DeepSeek 背书或提供支持。This community desktop client is not an official DeepSeek product and is not endorsed or supported by DeepSeek.
+
           ## 下载说明
 
-          本版本由 GitHub Actions 从对应 tag 自动构建。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请使用 `SHA256SUMS.txt` 校验下载文件。
+          本版本由 GitHub Actions 从对应 tag 自动构建，安装包内置固定版本的官方 `dsh` 运行时，无需另装 Node.js、pnpm 或 dsh CLI。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请使用 `SHA256SUMS.txt` 校验下载文件。
 
           ## Download notes
 
-          This release was built automatically from the matching tag. Packages are currently unsigned, so the operating system may show a security warning on first launch. Use `SHA256SUMS.txt` to verify downloads.
+          This release was built automatically from the matching tag and bundles a pinned official `dsh` runtime, so Node.js, pnpm, and a separate dsh CLI are not required. Packages are currently unsigned, so the operating system may show a security warning on first launch. Use `SHA256SUMS.txt` to verify downloads.
           EOF
 
           mapfile -d '' FILES < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)

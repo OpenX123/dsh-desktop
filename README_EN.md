@@ -7,14 +7,18 @@
 DeepSeek Harness Desktop is an independent Electron client for `dsh`. It starts or connects to the official `dsh Web UI` and displays that UI directly, so you get the complete Harness experience without keeping another browser tab open.
 
 > [!IMPORTANT]
-> This project is currently a **developer preview**. Pushing a version tag builds unsigned cross-platform packages automatically; you can also run it from source using the instructions below.
+> **This is an unofficial, community-maintained third-party project.** It is not developed, published, endorsed, or supported by DeepSeek and does not represent DeepSeek. `DeepSeek`, `DeepSeek Harness`, `dsh`, and related names, logos, and trademarks belong to their respective owners. Report desktop-client issues to this repository, not to DeepSeek support.
+
+Release packages bundle a pinned version of the official `@deepseek-ai/dsh` runtime. End users do not need to install Node.js, pnpm, or the `dsh` CLI separately. The desktop shell, installers, connection enhancements, and release signatures are independently maintained by this project and are not part of the official runtime.
+
+The desktop client and official `dsh` use independent version numbers; there is no required correspondence between them. The connection settings page displays both the desktop version and bundled dsh version for compatibility diagnostics.
 
 ![DeepSeek Harness Desktop home screen](docs/images/readme-home.png)
 
 ## Why use the desktop client?
 
 - **The real Harness experience** — the app loads the official Web UI itself. Projects, conversations, tasks, models, permissions, goals, plans, skills, and slash commands behave exactly as they do in the official product.
-- **Desktop-owned enhancements** — a locally spawned `dsh web` automatically gets the desktop's built-in patch: a Skills management page in settings (view, disable, delete local skills) and a composer "+" button that opens the same commands + skills menu as typing `/`. The patch artifacts ship with this repo (`vendor/dsh-web-patch/`) and never modify the official source.
+- **Desktop connection enhancements** — a clearly labeled connection card is added to the official settings surface, with a separate native connection window. These additions belong to this project and are not official Web UI features.
 - **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you.
 - **Keep your work continuous** — local mode uses the same `~/.dsh` data as the `dsh` CLI and browser Web UI. Your conversations, titles, credentials, and model configuration stay together.
 - **Connect wherever your Agent runs** — use the local runtime for everyday work, or point the app at another reachable `dsh Web UI` instance.
@@ -36,14 +40,15 @@ This interface is not a reimplementation. It is the official Web UI running insi
 
 ## Quick start
 
-### Prerequisites
+### Download a release
 
-- macOS, Windows, or Linux;
-- Node.js `^22.19.0 || >=24.0.0`;
-- [pnpm](https://pnpm.io/);
-- the official `dsh` CLI available on `PATH`, or an already running/reachable `dsh Web UI`.
+Download the package for your system from [GitHub Releases](https://github.com/bruc3van/dsh-desktop/releases) and launch it. Release builds include the official `dsh` runtime, require no development tools, and do not run an npm install on first launch.
+
+Automated packages are currently unsigned on macOS and Windows. The operating system may show a first-launch security warning; until signing and notarization are configured, this remains a known limitation of the “download and run” experience. Download only from this repository and verify the included `SHA256SUMS.txt`.
 
 ### Run from source
+
+Source development requires Node.js `^22.19.0 || >=24.0.0` and [pnpm](https://pnpm.io/). A separate `dsh` installation is not required.
 
 ```sh
 git clone https://github.com/bruc3van/dsh-desktop.git
@@ -55,9 +60,9 @@ pnpm run dev
 On launch, **Smart mode** first checks `http://127.0.0.1:3080`:
 
 1. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process.
-2. Otherwise, the app starts its own `dsh web --port 0` process.
+2. Otherwise, the app starts `dsh web --port 0` with the pinned official runtime bundled in the installer or project dependencies.
 
-If the local CLI cannot be found, or you want to use another instance, open the application menu and choose **Web UI Connection…**.
+If the bundled runtime cannot start, or you want to use another instance, open the application menu and choose **Web UI Connection…**.
 
 ### First conversation
 
@@ -94,6 +99,8 @@ Override these locations with `DSH_HOME` and `DSH_DESKTOP_HOME` respectively.
 
 The Electron window runs with context isolation and sandboxing enabled, Node integration disabled, navigation restricted to the configured Web UI origin, and external links opened in the system browser. The project never modifies the official Harness repository.
 
+Use of this client remains subject to the terms and privacy policies of DeepSeek, model providers, and any connected service. Users and those services are responsible for API keys, model requests, charges, generated content, and Agent actions on local files or commands. The software is provided “as is” under the MIT License, without warranties of fitness, data preservation, service availability, model output, or third-party cost, except where applicable law requires otherwise.
+
 ## Desktop behavior
 
 - Closing the main window keeps the app available in the system tray/menu bar.
@@ -110,11 +117,13 @@ pnpm run dist           # build packages for the current platform
 pnpm run typecheck      # TypeScript validation
 pnpm run lint           # source and script linting
 pnpm run audit          # boot and browser-surface smoke test
+pnpm run smoke:package  # prove the packaged app uses its bundled dsh runtime
 pnpm run shot           # refresh screenshots in shots/
+pnpm run shot:readme    # refresh the privacy-safe README screenshots
 pnpm run e2e            # send a real prompt and verify the streamed response
 ```
 
-`pnpm run e2e` needs a valid API key. The retained `src/renderer/` tree is archival reference code; the production window loads the official Web UI and does not build or use that renderer.
+`pnpm run e2e` needs a valid API key. The production window loads the official Web UI; this repository does not maintain a second product renderer.
 
 For the process model, trust boundary, and design decisions, see [Desktop client architecture](docs/desktop-client-architecture.md).
 
@@ -123,8 +132,8 @@ For the process model, trust boundary, and design decisions, see [Desktop client
 Before a release, update and commit the version in `package.json`, then push a matching tag:
 
 ```sh
-git tag v0.0.1-rc.1
-git push origin v0.0.1-rc.1
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 GitHub Actions validates that the tag matches `package.json`, then builds:
@@ -137,10 +146,12 @@ After every platform succeeds, the workflow generates SHA-256 checksums and crea
 
 ## Project status
 
-The core desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, cross-platform packaging, and tag-based release automation are implemented. Automated artifacts are currently unsigned; a general-user release still needs macOS/Windows signing and final integration with the official published `@deepseek-ai/dsh` package. Notifications, OS keychain integration, and voice input are also future work.
+The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, bundled official `@deepseek-ai/dsh`, cross-platform packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
 
 Contributions and issue reports are welcome, especially around Windows/Linux behavior, remote connections, and packaging.
 
 ## License
 
 [MIT](LICENSE)
+
+The MIT License covers only code and assets maintained in this repository. The bundled official `@deepseek-ai/dsh` runtime and other third-party dependencies remain under their own licenses. “DeepSeek Harness” is used in the project name only to identify the compatible product; it does not imply an official relationship.

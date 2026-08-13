@@ -1,16 +1,45 @@
 packages:
   - .
+  - dsh-runtime
+
+# Use pnpm's isolated deploy implementation. The legacy implementation prunes
+# the workspace root to production dependencies as a side effect.
+injectWorkspacePackages: true
+
+# Deliberate supply-chain tradeoff: an official dsh release is a same-day graph
+# of roughly 197 scoped packages, so release-day integration exempts the whole
+# scope instead of maintaining a generated per-package list. This also means a
+# newly published @deepseek-ai package can bypass pnpm's minimum release age.
+# Keep runtime direct dependencies exact, use --frozen-lockfile in CI, and
+# review every @deepseek-ai lockfile change before upgrading the bundled dsh.
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/*'
+
+# The macOS release is universal; keep both Darwin native dependency variants
+# available even when the workflow runner itself has only one architecture.
+supportedArchitectures:
+  os:
+    - current
+  cpu:
+    - arm64
+    - x64
+  libc:
+    - current
 
 # electron-builder 26.15.3 uses ElectronDownloadCacheMode, which was added in
 # @electron/get 3.1.0, while its published range still allows incompatible 3.0.0.
 overrides:
   "@electron/get": 3.1.0
 
-# pnpm 10+ blocks any dependency shipping an install/build script until it is
-# explicitly reviewed here. Electron needs its postinstall to fetch the
-# binary; esbuild needs its native-binary install; electron-winstaller selects
-# the bundled 7-Zip executable for the current architecture.
+# pnpm 10+ blocks dependency lifecycle scripts until they are reviewed here.
+# The dsh runtime needs node-pty's prebuilt helper permissions and Koffi's
+# platform package; the remaining scripts are optional/no-op for this app.
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': false
   electron: true
   electron-winstaller: true
   esbuild: true
+  koffi: true
+  node-pty: true
+  protobufjs: false

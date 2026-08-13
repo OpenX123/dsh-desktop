@@ -7,14 +7,18 @@
 DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启动或连接官方 `dsh Web UI`，并直接呈现官方界面，让你无需一直保留浏览器标签页，也能完整使用 Harness。
 
 > [!IMPORTANT]
-> 项目目前仍是**开发者预览版**。推送版本 tag 后会自动构建未签名的跨平台安装包；也可以按照下方说明从源码运行。
+> **这是社区维护的非官方第三方项目。** 本项目并非 DeepSeek 官方产品，不由 DeepSeek 开发、发布、背书或提供支持，也不代表 DeepSeek 的立场。`DeepSeek`、`DeepSeek Harness`、`dsh` 及相关名称、标识和商标归其各自权利人所有。桌面客户端的问题请提交到本仓库，不要联系 DeepSeek 官方支持。
+
+发布安装包内置固定版本的官方 `@deepseek-ai/dsh` 运行时；普通用户无需另外安装 Node.js、pnpm 或 `dsh` CLI。桌面外壳、安装包、连接增强与发布签名均由本项目独立负责，不属于官方运行时的一部分。
+
+桌面客户端与官方 `dsh` 使用各自独立的版本号，两者没有对应关系。应用的连接设置页会同时显示“桌面客户端版本”和“内置 dsh 版本”，便于排查兼容问题。
 
 ![DeepSeek Harness Desktop 首页](docs/images/readme-home.png)
 
 ## 为什么值得使用？
 
 - **原汁原味的 Harness 能力**：应用直接加载官方 Web UI。项目、会话、任务、模型、权限、目标、计划、技能与斜杠命令都沿用官方产品行为。
-- **桌面端自有增强**：本地启动的 `dsh web` 会自动叠加桌面端内置补丁——设置里新增「技能管理」（查看、禁用、删除本机技能），输入框「+」按钮打开与 `/` 一致的完整命令+技能菜单。补丁产物随仓库分发（`vendor/dsh-web-patch/`），不修改官方源码仓库。
+- **桌面端连接增强**：在官方设置界面中追加明确标注的连接卡片，并提供独立的原生连接窗口；这些增强属于本项目，不是官方 Web UI 功能。
 - **更少的启动步骤**：智能模式会优先复用电脑上已经运行的官方 Web UI；没有可用实例时，再替你启动 `dsh web`。
 - **工作上下文自然延续**：本地模式与 `dsh` CLI、浏览器版共用 `~/.dsh`，已有会话、标题、凭据和模型配置无需搬家。
 - **Agent 在哪里都能连接**：日常使用可以运行本地实例，也可以让桌面端连接另一台机器或容器中的 `dsh Web UI`。
@@ -36,14 +40,15 @@ DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启
 
 ## 快速开始
 
-### 环境要求
+### 下载发布版
 
-- macOS、Windows 或 Linux；
-- Node.js `^22.19.0 || >=24.0.0`；
-- [pnpm](https://pnpm.io/zh/)；
-- PATH 中可用的官方 `dsh` CLI，或者一个已经运行且可以访问的 `dsh Web UI`。
+从 [GitHub Releases](https://github.com/bruc3van/dsh-desktop/releases) 下载适合当前系统的安装包并启动即可。发布版内置官方 `dsh` 运行时，不依赖开发环境，也不会在首次启动时执行 npm 安装。
+
+当前自动构建的安装包尚未进行 macOS/Windows 代码签名。操作系统可能在首次启动时显示安全警告；在签名与公证配置完成前，这仍是“直接下载即可运行”的已知发布限制。请只从本仓库 Release 下载，并使用随附的 `SHA256SUMS.txt` 校验文件。
 
 ### 从源码运行
+
+源码开发需要 Node.js `^22.19.0 || >=24.0.0` 和 [pnpm](https://pnpm.io/zh/)；不需要另外安装 `dsh`。
 
 ```sh
 git clone https://github.com/bruc3van/dsh-desktop.git
@@ -55,9 +60,9 @@ pnpm run dev
 应用启动后，默认的**智能模式**会先检查 `http://127.0.0.1:3080`：
 
 1. 如果这里已经运行官方 Web UI，桌面端直接复用它。此时浏览器和桌面端共享同一个 Harness 进程，会话状态可以实时同步。
-2. 如果没有找到可用实例，桌面端会自行启动 `dsh web --port 0`。
+2. 如果没有找到可用实例，桌面端会使用安装包或项目依赖中固定的官方运行时启动 `dsh web --port 0`。
 
-如果找不到本地 CLI，或希望使用其他实例，请从应用菜单打开**「Web UI 连接…」**。
+如果内置运行时无法启动，或希望使用其他实例，请从应用菜单打开**「Web UI 连接…」**。
 
 ### 开始第一次对话
 
@@ -94,6 +99,8 @@ pnpm run dev
 
 Electron 窗口已开启上下文隔离与沙箱、关闭 Node 集成，将页面导航限制在当前 Web UI 源站，并把外部链接交给系统浏览器打开。项目不会修改官方 Harness 仓库。
 
+使用本客户端仍需遵守 DeepSeek、模型提供方和所连接服务各自的条款与隐私政策。API Key、模型请求、费用、生成内容以及 Agent 对本机文件或命令的操作由用户和对应服务负责。本软件按 MIT 许可证“原样”提供，不承诺适用于特定用途，也不对数据丢失、服务中断、模型输出或第三方费用承担保证责任；法律另有强制规定的除外。
+
 ## 桌面端行为
 
 - 关闭主窗口后，应用继续驻留在系统托盘或 macOS 菜单栏。
@@ -110,11 +117,13 @@ pnpm run dist           # 为当前平台生成安装包
 pnpm run typecheck      # TypeScript 类型检查
 pnpm run lint           # 检查源码与脚本
 pnpm run audit          # 启动与浏览器界面冒烟验证
+pnpm run smoke:package  # 验证打包应用确实使用内置 dsh 运行时
 pnpm run shot           # 更新 shots/ 中的截图
+pnpm run shot:readme    # 更新 README 使用的隐私安全截图
 pnpm run e2e            # 发送真实请求并验证流式回复
 ```
 
-`pnpm run e2e` 需要有效的 API Key。仓库中的 `src/renderer/` 仅作为历史参考保留；生产窗口直接加载官方 Web UI，不会构建或使用这套 renderer。
+`pnpm run e2e` 需要有效的 API Key。生产窗口直接加载官方 Web UI；仓库不维护第二套产品 renderer。
 
 进程模型、信任边界和设计取舍详见[桌面客户端架构](docs/desktop-client-architecture.zh.md)。
 
@@ -123,8 +132,8 @@ pnpm run e2e            # 发送真实请求并验证流式回复
 发布版本前，先将 `package.json` 中的版本号更新为目标版本并提交，然后推送同版本 tag：
 
 ```sh
-git tag v0.0.1-rc.1
-git push origin v0.0.1-rc.1
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 GitHub Actions 会校验 tag 与 `package.json` 版本一致，并分别构建：
@@ -137,10 +146,12 @@ GitHub Actions 会校验 tag 与 `package.json` 版本一致，并分别构建�
 
 ## 当前状态
 
-桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、跨平台打包和 tag 自动发布流程均已实现。当前自动产物尚未进行代码签名；面向普通用户正式发布前，仍需配置 macOS/Windows 签名，并完成与官方 `@deepseek-ai/dsh` 发布包的最终集成。系统通知、OS Keychain 与语音输入也属于后续工作。
+桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、内置官方 `@deepseek-ai/dsh`、跨平台打包和 tag 自动发布流程均已实现。发布流水线会在空 PATH 下启动打包应用并探测 Web UI，阻止遗漏内置运行时的产物发布。当前自动产物尚未进行代码签名；macOS/Windows 签名与公证仍是面向普通用户无警告安装的发布前置条件。系统通知、OS Keychain 与语音输入也属于后续工作。
 
 欢迎提交贡献与问题反馈，尤其是 Windows/Linux 使用、远程连接和打包方面的反馈。
 
 ## 许可证
 
 [MIT](LICENSE)
+
+MIT 许可证仅适用于本仓库自行维护的代码和素材。随安装包分发的官方 `@deepseek-ai/dsh` 及其他第三方依赖分别适用其自身许可证。本项目名称中的 “DeepSeek Harness” 仅用于说明兼容对象，不表示官方关系。

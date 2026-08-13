@@ -21,6 +21,8 @@ function argValue(name: string): string | undefined {
 interface ConnectionStatus {
   mode: 'local' | 'probe' | 'connect'
   targetUrl: string
+  desktopVersion: string
+  dshVersion: string | null
   childPid?: number
   lastError?: string
 }
@@ -99,11 +101,18 @@ function isGeneralTab(dialog: Element): boolean {
 function findVisiblePanel(options: Element): Element | null {
   for (const child of options.children) {
     if (child.id === ENHANCE_ID) continue
-    if (getComputedStyle(child).display === 'none') continue
-    if (child.getBoundingClientRect().width === 0) continue
-    return child
+    if (hasVisibleContent(child)) return child
   }
   return null
+}
+
+/** display:contents has no own box; visibility comes from a visible descendant. */
+function hasVisibleContent(element: Element): boolean {
+  const display = getComputedStyle(element).display
+  if (display === 'none') return false
+  if (display === 'contents') return [...element.children].some(hasVisibleContent)
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0
 }
 
 /** Append the enhanced-connection block to the GENERAL form flow, matching the official rows. */
@@ -121,6 +130,7 @@ function injectEnhance(panel: Element): void {
       '#' + ENHANCE_ID + ' .dsh-enhance-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:#0F1115}',
       '#' + ENHANCE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:#0F1115;background:#EBEEF2;border-radius:999px;padding:2px 8px}',
       '#' + ENHANCE_ID + ' .dsh-enhance-status{margin:0 0 12px;font-size:13px;color:#6E7480}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-version{margin:0 0 12px;font-size:12px;color:#8A9099}',
       '#' + ENHANCE_ID + ' .dsh-enhance-row{display:flex;gap:8px;align-items:center}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input{flex:1;min-width:0;background:#fff;border:1px solid #D8D8D4;border-radius:8px;padding:6px 10px;font-size:13px;color:#0F1115;outline:none}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input:focus{border-color:#0F1115}',
@@ -137,12 +147,14 @@ function injectEnhance(panel: Element): void {
   block.innerHTML =
     '<div class="dsh-enhance-title">连接<span class="dsh-enhance-badge">增强功能</span></div>'
     + '<p class="dsh-enhance-status" id="dsh-enhance-status">连接状态读取中…</p>'
+    + '<p class="dsh-enhance-version" id="dsh-enhance-version"></p>'
     + '<div class="dsh-enhance-row">'
     + '<input class="dsh-enhance-input" id="dsh-enhance-url" spellcheck="false" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）">'
     + '<button class="dsh-enhance-save" id="dsh-enhance-save" type="button">保存并重连</button>'
     + '</div>'
     + '<p class="dsh-enhance-note" id="dsh-enhance-note"></p>'
   const statusEl = block.querySelector('#dsh-enhance-status') as HTMLElement
+  const versionEl = block.querySelector('#dsh-enhance-version') as HTMLElement
   const urlEl = block.querySelector('#dsh-enhance-url') as HTMLInputElement
   const noteEl = block.querySelector('#dsh-enhance-note') as HTMLElement
   block.querySelector('#dsh-enhance-save')?.addEventListener('click', async () => {
@@ -156,6 +168,7 @@ function injectEnhance(panel: Element): void {
     statusEl.textContent = modeLabel + ' → ' + (status.targetUrl || '（未就绪）')
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
+    versionEl.textContent = '桌面客户端 v' + status.desktopVersion + ' · 内置 dsh ' + (status.dshVersion ?? '不可用')
   }).catch(() => { statusEl.textContent = '连接状态不可用' })
   panel.appendChild(block)
 }

@@ -15,6 +15,8 @@ import { _electron as electron } from 'playwright-core'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const outDir = join(APP_DIR, 'shots')
+const electronEnv = { ...process.env }
+Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
 const shot = async (page, name) => {
   const path = join(outDir, name + '.png')
   await page.screenshot({ path })
@@ -37,7 +39,7 @@ if (apiKey === '') {
   process.exit(0)
 }
 
-const app = await electron.launch({ args: [join(APP_DIR, '.build', 'main.mjs')] })
+const app = await electron.launch({ args: [join(APP_DIR, '.build', 'main.mjs')], env: electronEnv })
 const window = await app.firstWindow()
 window.on('console', msg => console.log('[renderer:' + msg.type() + '] ' + msg.text().slice(0, 300)))
 window.on('pageerror', err => console.log('[pageerror] ' + err.message.slice(0, 500)))

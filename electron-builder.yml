@@ -8,10 +8,13 @@ directories:
 files:
   - .build/**/*
   - resources/**/*
-  - vendor/**/*
   - package.json
   - LICENSE
   - "!node_modules/**/*"
+
+extraResources:
+  - from: .runtime/node_modules
+    to: dsh-runtime/node_modules
 
 asar: true
 npmRebuild: false
@@ -42,6 +45,7 @@ nsis:
 linux:
   icon: resources/icon-app.png
   category: Development
+  executableName: dsh-desktop
   target:
     - AppImage
     - deb

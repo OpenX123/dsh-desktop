@@ -24,7 +24,6 @@ import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from 'electron'
-import { applyDshWebPatch, describePatchResult } from './dsh-patch.ts'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -90,17 +89,29 @@ function nodeForChild(): string {
 }
 
 /**
- * The bundled dsh CLI: the app's own `@deepseek-ai/dsh` dependency (the
- * official npm distribution of the dsh CLI). The package is not on the
- * registry yet, so this resolves only once it is installed — in development
- * after a future `pnpm install`, and in the packaged app from the bundled
- * node_modules. No user-facing npm command is ever involved.
+ * The bundled dsh CLI. Release builds use pnpm deploy to materialize the
+ * complete production closure outside app.asar; development resolves the same
+ * pinned package from the dsh-runtime workspace. An end user needs neither a
+ * system Node nor a separately installed dsh command.
  */
 function resolveBundledDsh(): DshCommand | undefined {
   try {
-    const require = createRequire(join(APP_DIR, 'package.json'))
-    const bin = require.resolve('@deepseek-ai/dsh/lib/bin.js')
-    return { command: nodeForChild(), args: [bin], label: bin }
+    const bin = app.isPackaged
+      ? join(process.resourcesPath, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+      : createRequire(join(APP_DIR, 'dsh-runtime', 'package.json')).resolve('@deepseek-ai/dsh/lib/bin.js')
+    if (!existsSync(bin)) return undefined
+    return {
+      command: nodeForChild(),
+      // System Node can use node-addon-require-builtin, but Electron's Node
+      // mode does not expose the loader required by cordis-plugin-hmr through
+      // that addon and exits with "--expose-internals is required". Keep the
+      // unstable flag scoped to the packaged child; source audit and package
+      // smoke intentionally cover both execution paths.
+      args: [...app.isPackaged ? ['--expose-internals'] : [], bin],
+      binPath: bin,
+      label: bin,
+      source: 'bundled',
+    }
   } catch {
     return undefined
   }
@@ -108,20 +119,21 @@ function resolveBundledDsh(): DshCommand | undefined {
 
 /**
  * Resolve the `dsh` command the client spawns for local mode. Order: the
- * explicit DSH_DESKTOP_DSH override, the app-bundled npm package, `dsh` on
- * PATH, and finally the conventional sibling checkouts (dev convenience;
- * never a package dependency).
+ * explicit DSH_DESKTOP_DSH override, the app-bundled npm package, conventional
+ * sibling checkouts (dev convenience), and finally `dsh` on PATH.
  */
 interface DshCommand {
   command: string
   args: string[]
+  binPath?: string
   label: string
+  source: 'override' | 'bundled' | 'checkout' | 'path'
 }
 
 function resolveDshCommand(): DshCommand {
   const explicit = process.env.DSH_DESKTOP_DSH
   if (explicit !== undefined && explicit.trim() !== '') {
-    return { command: explicit, args: [], label: explicit }
+    return { command: explicit, args: [], label: explicit, source: 'override' }
   }
   const bundled = resolveBundledDsh()
   if (bundled !== undefined) return bundled
@@ -131,10 +143,10 @@ function resolveDshCommand(): DshCommand {
     const bin = join(siblings, name, 'apps', 'cli', 'lib', 'bin.js')
     if (existsSync(bin)) {
       const node = process.env.DSH_DESKTOP_NODE ?? 'node'
-      return { command: node, args: [bin], label: bin }
+      return { command: node, args: [bin], binPath: bin, label: bin, source: 'checkout' }
     }
   }
-  return { command: 'dsh', args: [], label: 'dsh' }
+  return { command: 'dsh', args: [], label: 'dsh', source: 'path' }
 }
 
 /** Parse the readiness line the official Web app prints once the server binds. */
@@ -188,15 +200,7 @@ class WebUiManager {
   spawn(): void {
     mkdirSync(childHome(), { recursive: true })
     const dsh = resolveDshCommand()
-    // The desktop owns product changes to the official Web UI (skills
-    // management, full-roster composer launcher). Overlay their pre-built
-    // artifacts onto this local dsh installation before the child serves
-    // them; probe/connect modes load a remote server and skip it.
-    if (dsh.args[0] !== undefined) {
-      console.log(describePatchResult(applyDshWebPatch(dsh.args[0])))
-    } else {
-      console.log('dsh web patch: PATH-dsh resolution, skipping overlay (features stay stock)')
-    }
+    console.log('[desktop] dsh runtime: ' + dsh.source + ' (' + dsh.label + ')')
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
       env: {
@@ -215,6 +219,7 @@ class WebUiManager {
     })
     const gen: WebUiGeneration = { child, ready, readyReported: false }
     let exitReported = false
+    let readinessProbeStarted = false
 
     const reportExit = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (exitReported) return
@@ -234,10 +239,19 @@ class WebUiManager {
         if (line.trim() === '') continue
         this.onLog(line)
         const url = parseReadiness(line)
-        if (url !== undefined) {
-          gen.readyReported = true
-          this.lastError = null
-          resolveReady(url)
+        if (url !== undefined && !readinessProbeStarted) {
+          readinessProbeStarted = true
+          void waitForWebUiReady(url).then(() => {
+            if (exitReported) return
+            gen.readyReported = true
+            this.lastError = null
+            resolveReady(url)
+          }, (error: unknown) => {
+            if (exitReported) return
+            this.lastError = error instanceof Error ? error.message : String(error)
+            rejectReady(error instanceof Error ? error : new Error(String(error)))
+            child.kill()
+          })
         }
       }
     })
@@ -349,13 +363,13 @@ function currentTarget(): string | undefined {
  * so the trust fence passes over loopback). Returns the origin when a real
  * harness answers host.describe, undefined otherwise.
  */
-async function probeWebUi(base: string): Promise<string | undefined> {
+async function probeWebUi(base: string, timeoutMs = 1_500): Promise<string | undefined> {
   try {
     const response = await fetch(base + '/api/host.describe', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId: 'desktop-probe', method: 'host.describe', payload: {} }),
-      signal: AbortSignal.timeout(1500),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) return undefined
     const body = await response.json() as { result?: { ok?: boolean } }
@@ -364,6 +378,16 @@ async function probeWebUi(base: string): Promise<string | undefined> {
   } catch {
     return undefined
   }
+}
+
+/** Allow binding and API initialization up to 10 seconds after the log line. */
+async function waitForWebUiReady(base: string): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    if (await probeWebUi(base, 300) !== undefined) return
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error('dsh web reported readiness but did not accept API requests')
 }
 
 /** Open external links in the system browser; never in a client window. */
@@ -574,9 +598,41 @@ function getStatusJson(): Record<string, unknown> {
   return {
     mode: probeConnected ? 'probe' : configuredTarget !== undefined ? 'connect' : 'local',
     targetUrl: currentTarget() ?? '',
+    desktopVersion: desktopClientVersion(),
+    dshVersion: bundledDshVersion(),
     ...webUi?.pid() !== undefined && { childPid: webUi.pid() },
     ...webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
   }
+}
+
+let cachedDesktopVersion: string | undefined
+
+/** The desktop shell version is independent from Electron and dsh versions. */
+function desktopClientVersion(): string {
+  if (cachedDesktopVersion !== undefined) return cachedDesktopVersion
+  try {
+    const manifest = JSON.parse(readFileSync(join(APP_DIR, 'package.json'), 'utf8')) as { version?: unknown }
+    cachedDesktopVersion = typeof manifest.version === 'string' ? manifest.version : app.getVersion()
+  } catch {
+    cachedDesktopVersion = app.getVersion()
+  }
+  return cachedDesktopVersion
+}
+
+let cachedBundledDshVersion: string | null | undefined
+
+/** Version of the official runtime shipped with this desktop release. */
+function bundledDshVersion(): string | null {
+  if (cachedBundledDshVersion !== undefined) return cachedBundledDshVersion
+  const bin = resolveBundledDsh()?.binPath
+  if (bin === undefined) return (cachedBundledDshVersion = null)
+  try {
+    const manifest = JSON.parse(readFileSync(join(bin, '..', '..', 'package.json'), 'utf8')) as { version?: unknown }
+    cachedBundledDshVersion = typeof manifest.version === 'string' ? manifest.version : null
+  } catch {
+    cachedBundledDshVersion = null
+  }
+  return cachedBundledDshVersion
 }
 
 /** Behavior for the loopback connection-settings page, served under the same origin. */
@@ -584,6 +640,7 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
   + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
   + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
+  + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用");'
   + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";}catch(e){$("status").textContent="状态不可用"}}'
   + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
   + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
@@ -603,6 +660,7 @@ function settingsPageHtml(): string {
     + 'button.primary{background:#1c1c1c;color:#fff;border-color:#1c1c1c;margin-right:8px}</style></head><body>'
     + '<h1>Web UI 连接</h1>'
     + '<p id="status">读取状态…</p>'
+    + '<p id="versions"></p>'
     + '<label for="url">Web UI 地址（留空 = 本地启动 dsh）</label>'
     + '<input id="url" placeholder="http://127.0.0.1:3080" spellcheck="false">'
     + '<div><button id="save" class="primary">保存并重连</button><button id="close">关闭</button></div>'
@@ -631,6 +689,10 @@ function startLocalRuntime(generation: number): void {
 /** Smart mode: prefer a locally running official instance, else launch our own. */
 function resolveRuntime(): void {
   const generation = ++connectionGeneration
+  if (process.env.DSH_DESKTOP_SKIP_PROBE === '1') {
+    startLocalRuntime(generation)
+    return
+  }
   void probeWebUi(DEFAULT_WEB_PROBE_URL).then((probed) => {
     if (quitting || generation !== connectionGeneration) return
     if (probed !== undefined) {
@@ -659,6 +721,7 @@ function launchWindow(generation = connectionGeneration): void {
   }
   void webUi?.ready().then((url) => {
     if (generation !== connectionGeneration || quitting) return
+    console.log('[desktop] dsh runtime ready: ' + url)
     childTarget = url
     launchBudget = MAX_LAUNCH_RETRIES
     if (mainWindow === null) createWindow(url)
@@ -819,7 +882,7 @@ function boot(): void {
         const reason = webUi?.lastError
         dialog.showErrorBox('Harness', '本地 dsh web 启动失败（代码 ' + String(code) + ' / 信号 ' + String(signal) + '）。\n'
           + (reason !== null && reason !== undefined ? reason + '\n' : '')
-          + '请确认 dsh 已安装（或通过菜单 "Web UI 连接…" 填写 Web UI 地址）。')
+          + '安装包内置运行时不可用。请重新安装客户端，或通过菜单 "Web UI 连接…" 填写另一个 Web UI 地址。')
         app.quit()
         return
       }
@@ -860,7 +923,7 @@ if (!gotLock) {
   })
 
   void app.whenReady().then(async () => {
-    app.setName('Harness')
+    app.setName('DeepSeek Harness Desktop')
     // The official logo in the macOS dock (rounded-corner tile, white glyph).
     if (process.platform === 'darwin') {
       const dockIcon = nativeImage.createFromPath(ICON_PNG)
