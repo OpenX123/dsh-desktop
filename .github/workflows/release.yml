@@ -206,6 +206,25 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: npm pkg set "version=$RELEASE_VERSION"
 
+      # The bundled runtime is tens of thousands of small files, written once by
+      # the packager and again by the installer smoke. Real-time scanning of
+      # every one of them dominates this job; excluding the two directories the
+      # build owns is a runner-local change that never reaches an artifact.
+      - name: 排除 Defender 实时扫描 / Exclude build paths from Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP)) {
+            try {
+              Add-MpPreference -ExclusionPath $path -ErrorAction Stop
+              Write-Host "excluded $path"
+            } catch {
+              # An unavailable Defender API is a lost optimisation, not a
+              # release blocker: the build is correct either way.
+              Write-Host "could not exclude ${path}: $($_.Exception.Message)"
+            }
+          }
+
       - name: 安装依赖 / Install dependencies
         run: pnpm install --frozen-lockfile
 
