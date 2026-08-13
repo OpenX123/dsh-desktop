@@ -1121,8 +1121,12 @@ if (!gotLock) {
 
   void app.whenReady().then(async () => {
     app.setName('DeepSeek Harness Desktop')
-    // The official logo in the macOS dock (rounded-corner tile, white glyph).
-    if (process.platform === 'darwin') {
+    // Packaged macOS builds use the bundle icon. Do not replace it at runtime
+    // with the pre-masked PNG: macOS 26 adds its own enclosure around that
+    // image and produces a visible double border. An unpackaged run has no
+    // bundle icon at all, so there the PNG is still better than Electron's
+    // default dock tile.
+    if (process.platform === 'darwin' && !app.isPackaged) {
       const dockIcon = nativeImage.createFromPath(ICON_PNG)
       if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
     }

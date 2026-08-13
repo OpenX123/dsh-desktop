@@ -8,6 +8,8 @@ directories:
 files:
   - .build/**/*
   - resources/**/*
+  # Build-time source for the .icns only; nothing reads it at runtime.
+  - "!resources/icon-mac.png"
   - package.json
   - LICENSE
   - "!node_modules/**/*"
@@ -25,7 +27,11 @@ compression: normal
 artifactName: dsh-desktop-${version}-${os}-${arch}.${ext}
 
 mac:
-  icon: resources/icon-app.png
+  # Apple's app-icon grid: an 824x824 squircle body centred in a 1024 canvas,
+  # transparent elsewhere. Matching the system's own proportions keeps the dock
+  # tile the same size as every other app, and keeps macOS 26's enclosure clear
+  # of the artwork instead of drawing a second border around it.
+  icon: resources/icon-mac.png
   category: public.app-category.developer-tools
   target:
     - dmg
