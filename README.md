@@ -138,17 +138,18 @@ pnpm run e2e            # 发送真实请求并验证流式回复
 
 ## 版本发布
 
-发布版本前，先将 `package.json` 中的版本号更新为目标版本并提交，然后推送同版本 tag：
+发布版本时直接推送版本 tag；GitHub Actions 会以 tag 为唯一版本来源，并在构建时写入 `package.json`：
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 GitHub Actions 会校验 tag 格式，并以 tag 作为发布版本分别构建：
 
-- macOS 通用版：DMG 与 ZIP；
-- Windows x64：NSIS 安装程序与免安装 ZIP。
+- macOS Apple Silicon：DMG；
+- macOS Intel：DMG；
+- Windows x64：NSIS 安装程序。
 
 Linux 安装包暂不在自动发布范围内；源码中的通用平台兼容逻辑仍予保留。
 

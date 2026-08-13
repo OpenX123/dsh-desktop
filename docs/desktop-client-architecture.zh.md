@@ -18,7 +18,7 @@
 
 开发/诊断环境变量 `DSH_DESKTOP_DSH` 和 `DSH_DESKTOP_NODE` 可覆盖 CLI 与 Node 路径。`DSH_DESKTOP_SKIP_PROBE=1` 仅供自动化测试强制走内置本地运行时，不属于用户配置接口。
 
-当前发布矩阵覆盖 macOS Universal 与 Windows x64。`dsh-runtime/package.json` 保留 Linux x64 原生可选包，供源码构建及未来恢复发布支持使用。新增发布架构或升级 dsh 时必须同步核对该清单并运行对应平台的安装包 smoke。
+当前发布矩阵分别提供 macOS Apple Silicon、macOS Intel 与 Windows x64 安装包，每个原生 runner 只部署当前架构依赖。`dsh-runtime/package.json` 保留 Linux x64 原生可选包，供源码构建及未来恢复发布支持使用。新增发布架构或升级 dsh 时必须同步核对该清单并运行对应平台的安装包 smoke。
 
 ## 后果
 

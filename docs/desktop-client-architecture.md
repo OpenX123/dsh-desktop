@@ -18,7 +18,7 @@ The client's own connection settings live in `~/.dsh-desktop` (override `DSH_DES
 
 Development/diagnostic variables `DSH_DESKTOP_DSH` and `DSH_DESKTOP_NODE` override the CLI and Node paths. `DSH_DESKTOP_SKIP_PROBE=1` is test-only: it forces automation through the bundled local runtime and is not a user configuration surface.
 
-The current release matrix covers macOS Universal and Windows x64. `dsh-runtime/package.json` retains Linux x64 native optional packages for source builds and future release re-enablement. Adding a release architecture or upgrading dsh requires rechecking that list and running the package smoke on the corresponding platform.
+The current release matrix covers separate macOS Apple Silicon and Intel packages plus Windows x64. Each native runner deploys only its current architecture. `dsh-runtime/package.json` retains Linux x64 native optional packages for source builds and future release re-enablement. Adding a release architecture or upgrading dsh requires rechecking that list and running the package smoke on the corresponding platform.
 
 ## Consequences
 

@@ -140,17 +140,17 @@ jobs:
           - name: macOS Apple Silicon
             id: macos-arm64
             os: macos-15
-            command: pnpm exec electron-builder --mac dmg zip --arm64 --publish never
+            command: pnpm exec electron-builder --mac dmg --arm64 --publish never
             smoke: pnpm run smoke:package
           - name: macOS Intel
             id: macos-x64
             os: macos-15-intel
-            command: pnpm exec electron-builder --mac dmg zip --x64 --publish never
+            command: pnpm exec electron-builder --mac dmg --x64 --publish never
             smoke: pnpm run smoke:package
           - name: Windows x64
             id: windows-x64
             os: windows-latest
-            command: pnpm exec electron-builder --win nsis zip --x64 --publish never
+            command: pnpm exec electron-builder --win nsis --x64 --publish never
             smoke: pnpm run smoke:package
 
     steps:
@@ -216,46 +216,6 @@ jobs:
             throw "Installed NSIS runtime smoke failed with code $LASTEXITCODE"
           }
 
-      - name: 验证 Windows ZIP 解压结果 / Smoke extracted Windows ZIP runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Get-ChildItem -Path release -File -Filter '*.zip' | Select-Object -First 1
-          if ($null -eq $archive) {
-            throw 'Windows ZIP package not found under release/'
-          }
-
-          $extractDir = Join-Path $env:RUNNER_TEMP ('dsh-desktop-zip-' + [guid]::NewGuid().ToString('N'))
-          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extractDir
-          $executable = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'DeepSeek Harness Desktop.exe' | Select-Object -First 1
-          if ($null -eq $executable) {
-            throw "Extracted executable not found under $extractDir"
-          }
-          pnpm run smoke:package -- "$($executable.FullName)"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Extracted ZIP runtime smoke failed with code $LASTEXITCODE"
-          }
-
-      # Runs even when a smoke step failed: the packages are what a failure
-      # has to be diagnosed from. A failed job still blocks the release,
-      # because the publish job depends on this one succeeding.
-      - name: 上传构建产物 / Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dsh-desktop-${{ matrix.id }}
-          if-no-files-found: warn
-          retention-days: 14
-          path: |
-            release/*.dmg
-            release/*.zip
-            release/*.exe
-            release/*.blockmap
-            release/*.yml
-            !release/builder-debug.yml
-            !release/builder-effective-config.yaml
-
       # 只有本平台全部冒烟测试通过后，安装包才会进入草稿 Release。
       # Packages reach the draft release only after every smoke check passed.
       - name: 上传安装包到草稿 Release / Upload packages to draft release
@@ -268,13 +228,27 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          files=(release/*.dmg release/*.zip release/*.exe release/*.blockmap)
+          files=(release/*.dmg release/*.exe)
           if (( ${#files[@]} == 0 )); then
             echo "release/ 下没有找到安装包 / No packages found under release/" >&2
             exit 1
           fi
 
           gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+
+      # Keep packages for diagnosis when any step above failed, including the
+      # Release upload itself. Successful runs already have their only copy on
+      # the draft Release and do not need a duplicate Actions artifact.
+      - name: 上传失败构建产物 / Upload failed build artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dsh-desktop-${{ matrix.id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            release/*.dmg
+            release/*.exe
 
   publish:
     name: 发布 GitHub Release / Publish GitHub Release

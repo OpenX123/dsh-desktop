@@ -15,17 +15,6 @@ injectWorkspacePackages: true
 minimumReleaseAgeExclude:
   - '@deepseek-ai/*'
 
-# The macOS release is universal; keep both Darwin native dependency variants
-# available even when the workflow runner itself has only one architecture.
-supportedArchitectures:
-  os:
-    - current
-  cpu:
-    - arm64
-    - x64
-  libc:
-    - current
-
 # electron-builder 26.15.3 uses ElectronDownloadCacheMode, which was added in
 # @electron/get 3.1.0, while its published range still allows incompatible 3.0.0.
 overrides:

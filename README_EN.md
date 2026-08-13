@@ -138,17 +138,18 @@ For the process model, trust boundary, and design decisions, see [Desktop client
 
 ## Releasing a version
 
-Before a release, update and commit the version in `package.json`, then push a matching tag:
+To release a version, push its tag directly. GitHub Actions treats the tag as the single version source and writes it to `package.json` during the build:
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 GitHub Actions validates the tag format, uses the tag as the release version, then builds:
 
-- macOS universal: DMG and ZIP;
-- Windows x64: NSIS installer and portable ZIP.
+- macOS Apple Silicon: DMG;
+- macOS Intel: DMG;
+- Windows x64: NSIS installer.
 
 Linux packages are temporarily outside the automated release scope; the source-level cross-platform compatibility code remains in place.
 
