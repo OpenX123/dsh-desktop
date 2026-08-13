@@ -141,23 +141,24 @@ pnpm run e2e            # 发送真实请求并验证流式回复
 发布版本前，先将 `package.json` 中的版本号更新为目标版本并提交，然后推送同版本 tag：
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-GitHub Actions 会校验 tag 与 `package.json` 版本一致，并分别构建：
+GitHub Actions 会校验 tag 格式，并以 tag 作为发布版本分别构建：
 
 - macOS 通用版：DMG 与 ZIP；
-- Windows x64：NSIS 安装程序与免安装 ZIP；
-- Linux x64：AppImage 与 DEB。
+- Windows x64：NSIS 安装程序与免安装 ZIP。
+
+Linux 安装包暂不在自动发布范围内；源码中的通用平台兼容逻辑仍予保留。
 
 全部平台构建成功后，工作流会生成 SHA-256 校验文件，并创建或更新对应的 GitHub Release。包含 `-rc`、`-beta` 等预发布标识的 tag 会自动标记为预发布版本。
 
 ## 当前状态
 
-桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、内置官方 `@deepseek-ai/dsh`、跨平台打包和 tag 自动发布流程均已实现。发布流水线会在空 PATH 下启动打包应用并探测 Web UI，阻止遗漏内置运行时的产物发布。当前自动产物尚未进行代码签名；macOS/Windows 签名与公证仍是面向普通用户无警告安装的发布前置条件。系统通知、OS Keychain 与语音输入也属于后续工作。
+桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、内置官方 `@deepseek-ai/dsh`、macOS/Windows 打包和 tag 自动发布流程均已实现。发布流水线会在空 PATH 下启动打包应用并探测 Web UI，阻止遗漏内置运行时的产物发布。当前自动产物尚未进行代码签名；macOS/Windows 签名与公证仍是面向普通用户无警告安装的发布前置条件。系统通知、OS Keychain 与语音输入也属于后续工作。
 
-欢迎提交贡献与问题反馈，尤其是 Windows/Linux 使用、远程连接和打包方面的反馈。
+欢迎提交贡献与问题反馈，尤其是 Windows 使用、远程连接和打包方面的反馈。
 
 ## 许可证
 

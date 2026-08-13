@@ -2,7 +2,7 @@
   "name": "dsh-desktop-runtime",
   "version": "0.0.0",
   "private": true,
-  "description": "Pinned dsh runtime closure for the release matrix: macOS universal plus Windows/Linux x64. Update native optional packages when adding targets or upgrading dsh.",
+  "description": "Pinned dsh runtime closure for the release matrix: macOS universal plus Windows x64. Linux native packages are retained for source builds and future release re-enablement.",
   "dependencies": {
     "@deepseek-ai/cordis-plugin-group": "1.0.1",
     "@deepseek-ai/dsh": "0.1.0-rc.6"

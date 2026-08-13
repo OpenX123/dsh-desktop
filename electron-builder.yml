@@ -42,14 +42,6 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
 
-linux:
-  icon: resources/icon-app.png
-  category: Development
-  executableName: dsh-desktop
-  target:
-    - AppImage
-    - deb
-
 publish:
   provider: github
   owner: bruc3van

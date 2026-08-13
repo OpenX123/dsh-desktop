@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要构建的已有版本 tag，例如 v0.1.0 / Existing release tag"
+        description: "要构建的已有版本 tag，例如 v0.1.1 / Existing release tag"
         required: true
         type: string
 
@@ -152,11 +152,6 @@ jobs:
             os: windows-latest
             command: pnpm exec electron-builder --win nsis zip --x64 --publish never
             smoke: pnpm run smoke:package
-          - name: Linux x64
-            id: linux-x64
-            os: ubuntu-latest
-            command: pnpm exec electron-builder --linux AppImage deb --x64 --publish never
-            smoke: xvfb-run -a pnpm run smoke:package
 
     steps:
       - name: 检出 tag / Checkout tag
@@ -247,17 +242,15 @@ jobs:
       # because the publish job depends on this one succeeding.
       - name: 上传构建产物 / Upload artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dsh-desktop-${{ matrix.id }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             release/*.dmg
             release/*.zip
             release/*.exe
-            release/*.AppImage
-            release/*.deb
             release/*.blockmap
             release/*.yml
             !release/builder-debug.yml
@@ -275,7 +268,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap)
+          files=(release/*.dmg release/*.zip release/*.exe release/*.blockmap)
           if (( ${#files[@]} == 0 )); then
             echo "release/ 下没有找到安装包 / No packages found under release/" >&2
             exit 1

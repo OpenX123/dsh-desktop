@@ -14,15 +14,22 @@ const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const destination = join(APP_DIR, '.runtime')
 await rm(destination, { recursive: true, force: true })
 
-const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-const child = spawn(command, [
+const pnpmArgs = [
   '--filter',
   'dsh-desktop-runtime',
   'deploy',
   '--prod',
   '--frozen-lockfile',
-  destination,
-], { cwd: APP_DIR, stdio: 'inherit' })
+  '.runtime',
+]
+
+// Node 24 no longer launches Windows batch files directly with spawn(). Run
+// pnpm through cmd.exe there; every argument is a fixed project-owned value.
+const command = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'pnpm'
+const args = process.platform === 'win32'
+  ? ['/d', '/s', '/c', ['pnpm', ...pnpmArgs].join(' ')]
+  : pnpmArgs
+const child = spawn(command, args, { cwd: APP_DIR, stdio: 'inherit' })
 
 const code = await new Promise((resolve, reject) => {
   child.once('error', reject)

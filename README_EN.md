@@ -141,23 +141,24 @@ For the process model, trust boundary, and design decisions, see [Desktop client
 Before a release, update and commit the version in `package.json`, then push a matching tag:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-GitHub Actions validates that the tag matches `package.json`, then builds:
+GitHub Actions validates the tag format, uses the tag as the release version, then builds:
 
 - macOS universal: DMG and ZIP;
-- Windows x64: NSIS installer and portable ZIP;
-- Linux x64: AppImage and DEB.
+- Windows x64: NSIS installer and portable ZIP.
+
+Linux packages are temporarily outside the automated release scope; the source-level cross-platform compatibility code remains in place.
 
 After every platform succeeds, the workflow generates SHA-256 checksums and creates or updates the matching GitHub Release. Tags containing prerelease identifiers such as `-rc` or `-beta` are marked as prereleases automatically.
 
 ## Project status
 
-The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, bundled official `@deepseek-ai/dsh`, cross-platform packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
+The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
 
-Contributions and issue reports are welcome, especially around Windows/Linux behavior, remote connections, and packaging.
+Contributions and issue reports are welcome, especially around Windows behavior, remote connections, and packaging.
 
 ## License
 
