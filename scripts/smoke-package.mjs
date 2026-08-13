@@ -7,6 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
@@ -15,6 +16,10 @@ import { fileURLToPath } from 'node:url'
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const RELEASE_DIR = join(APP_DIR, 'release')
 const PRODUCT_NAME = 'DeepSeek Harness Desktop'
+// A freshly installed Windows build starts cold: thousands of bundled runtime
+// files are still being scanned on first touch, so its first launch is far
+// slower than the already-warm unpacked directory this also runs against.
+const READY_TIMEOUT_MS = Number(process.env.DSH_SMOKE_TIMEOUT_MS) || (process.platform === 'win32' ? 180_000 : 60_000)
 
 async function walk(root) {
   const entries = await readdir(root, { withFileTypes: true })
@@ -28,7 +33,11 @@ async function walk(root) {
 }
 
 async function findExecutable() {
-  const requested = process.argv[2]
+  // `pnpm run <script> -- <path>` forwards the separator itself as an argument,
+  // so a literal `--` must not be mistaken for the requested executable: that
+  // resolved to a non-existent path and the run failed as an opaque readiness
+  // timeout instead of naming the real problem.
+  const requested = process.argv.slice(2).find(argument => argument !== '--')
   if (requested !== undefined) return resolve(requested)
 
   const files = await walk(RELEASE_DIR)
@@ -45,6 +54,8 @@ async function findExecutable() {
 
 const executable = await findExecutable()
 if (executable === undefined) throw new Error('packaged executable not found under ' + RELEASE_DIR)
+// Fail on the path itself rather than 60 seconds later on a silent spawn.
+if (!existsSync(executable)) throw new Error('packaged executable does not exist: ' + executable)
 
 const smokeHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-package-smoke-'))
 const emptyPath = join(smokeHome, 'empty-path')
@@ -86,7 +97,10 @@ const readiness = new Promise((resolveReady, rejectReady) => {
     clearTimeout(timeout)
     rejectReady(error)
   }
-  const timeout = setTimeout(() => finishError(new Error('timed out waiting for packaged dsh web')), 60_000)
+  const timeout = setTimeout(
+    () => finishError(new Error('timed out waiting for packaged dsh web after ' + READY_TIMEOUT_MS + 'ms')),
+    READY_TIMEOUT_MS,
+  )
   const inspect = chunk => {
     append(chunk)
     const match = /\[desktop\] dsh runtime ready:\s+(http:\/\/\S+)/.exec(output)
@@ -97,6 +111,11 @@ const readiness = new Promise((resolveReady, rejectReady) => {
   }
   child.stdout.on('data', inspect)
   child.stderr.on('data', inspect)
+  // Without this listener a spawn failure is an unhandled 'error' event, which
+  // never settles the readiness promise through the normal path.
+  child.once('error', error => {
+    finishError(new Error('failed to spawn ' + executable + ': ' + error.message))
+  })
   child.once('exit', code => {
     finishError(new Error('packaged app exited before readiness (code=' + String(code) + ')'))
   })

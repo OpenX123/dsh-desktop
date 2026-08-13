@@ -243,7 +243,9 @@ jobs:
           if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
             throw "Installed executable not found: $executable"
           }
-          pnpm run smoke:package -- "$executable"
+          # Not `pnpm run smoke:package -- ...`: pnpm forwards the separator
+          # itself, so the script would receive a literal `--` as its target.
+          node scripts/smoke-package.mjs "$executable"
           if ($LASTEXITCODE -ne 0) {
             throw "Installed NSIS runtime smoke failed with code $LASTEXITCODE"
           }
