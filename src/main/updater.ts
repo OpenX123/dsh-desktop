@@ -112,11 +112,18 @@ const GITHUB_DOWNLOAD_HOSTS = new Set([
   'release-assets.githubusercontent.com',
 ])
 
-export function defaultUpdateFeedUrl(): string {
+/**
+ * `allowOverride` is false in a packaged build: the update feed decides which
+ * executable this client downloads and runs, so it must not be redirectable by
+ * an environment variable any other process on the machine can set.
+ */
+export function defaultUpdateFeedUrl(allowOverride = true): string {
+  if (!allowOverride) return DEFAULT_FEED_URL
   return process.env.DSH_DESKTOP_UPDATE_FEED?.trim() || DEFAULT_FEED_URL
 }
 
-export function defaultGithubApiUrl(): string | undefined {
+export function defaultGithubApiUrl(allowOverride = true): string | undefined {
+  if (!allowOverride) return DEFAULT_GITHUB_API
   const override = process.env.DSH_DESKTOP_UPDATE_GITHUB_API
   if (override !== undefined) {
     const trimmed = override.trim()
@@ -140,7 +147,32 @@ export function compareVersions(left: string, right: string): number {
   if (leftPre === undefined && rightPre !== undefined) return 1
   if (leftPre !== undefined && rightPre === undefined) return -1
   if (leftPre === rightPre) return 0
-  return (leftPre ?? '') < (rightPre ?? '') ? -1 : 1
+  return comparePrerelease(leftPre ?? '', rightPre ?? '')
+}
+
+/**
+ * Semver prerelease ordering: dot-separated identifiers, numeric ones compared
+ * as numbers. Plain string comparison puts rc.10 before rc.9 and would report
+ * a newer prerelease as "already current".
+ */
+function comparePrerelease(left: string, right: string): number {
+  const a = left.split('.')
+  const b = right.split('.')
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i]
+    const bv = b[i]
+    if (av === undefined) return -1
+    if (bv === undefined) return 1
+    const aNumeric = /^\d+$/.test(av)
+    const bNumeric = /^\d+$/.test(bv)
+    if (aNumeric && bNumeric) {
+      if (Number(av) !== Number(bv)) return Number(av) < Number(bv) ? -1 : 1
+      continue
+    }
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1
+    if (av !== bv) return av < bv ? -1 : 1
+  }
+  return 0
 }
 
 function parseVersion(input: string): { core: number[]; prerelease?: string } {
@@ -397,8 +429,8 @@ export class DesktopUpdater {
     this.progress = { total: 0, downloaded: 0, percent: 0 }
     this.setPhase('downloading')
 
-    const destination = joinDownloadPath(this.options.downloadDir, info.fileName)
     try {
+      const destination = joinDownloadPath(this.options.downloadDir, info.fileName)
       await this.downloadToFile(info, destination)
       const actual = await sha256File(destination)
       if (actual !== info.sha256.toLowerCase()) {
@@ -616,7 +648,11 @@ function fileNameFromUrl(url: string): string | undefined {
 }
 
 function joinDownloadPath(dir: string, fileName: string): string {
-  return join(dir, fileName.replace(/[\\/]/g, '_'))
+  const safe = fileName.replace(/[\\/]/g, '_')
+  // Separators are neutralized above; a bare `.`/`..` still names a directory
+  // rather than a file, so reject it instead of writing outside downloadDir.
+  if (safe === '' || safe === '.' || safe === '..') throw new Error('更新清单中的安装包文件名无效')
+  return join(dir, safe)
 }
 
 async function sha256File(path: string): Promise<string> {

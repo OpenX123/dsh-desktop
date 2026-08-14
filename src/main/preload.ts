@@ -4,18 +4,17 @@
  * injected into the OFFICIAL settings dialog (marked 增强功能/Enhanced), kept
  * visually separate and optional: if the official dialog cannot be detected
  * the injection silently does nothing and the official UI is untouched.
- * Runs sandboxed, so only Electron APIs are available; the OS username
- * arrives from the main process via an additional argv flag.
+ * Runs sandboxed, so only Electron APIs are available.
+ *
+ * The bridge below is exposed on every document the window loads, which in
+ * Connect mode is an address the user typed. It therefore carries no local
+ * facts of its own (the OS username used to ride here on an argv flag and was
+ * removed — nothing consumed it), and every channel it calls is authorized
+ * against the sender's origin in the main process.
  * @module dsh-desktop/preload
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
-
-function argValue(name: string): string | undefined {
-  const prefix = `--${name}=`
-  const arg = process.argv.find(item => item.startsWith(prefix))
-  return arg === undefined ? undefined : arg.slice(prefix.length)
-}
 
 /** Connection facts mirrored from the main process. */
 interface ConnectionStatus {
@@ -68,7 +67,6 @@ const update = {
 
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
-  username: argValue('dsh-username') ?? 'user',
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,

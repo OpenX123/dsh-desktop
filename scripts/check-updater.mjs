@@ -10,7 +10,8 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import * as esbuild from 'esbuild'
 import { _electron as electron } from 'playwright-core'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -52,6 +53,47 @@ if (written.platforms['mac-arm64']?.url !== 'https://github.com/bruc3van/dsh-des
 }
 console.log('✓ write-update-feed.mjs emits latest.json for win-x64 and mac-arm64')
 console.log('✓ write-update-feed.mjs copies release notes from --notes-file')
+
+// Version ordering decides whether an offered build counts as newer, and the
+// app-level checks below can only exercise it against this package's own
+// release version. Bundle the module against an electron stub so the ordering
+// rules themselves — including prerelease ranks — are asserted directly.
+const electronStub = join(work, 'electron-stub.mjs')
+writeFileSync(electronStub, 'export const shell = { openPath: async () => "" }\n')
+const updaterBundle = join(work, 'updater.mjs')
+await esbuild.build({
+  entryPoints: [join(APP_DIR, 'src', 'main', 'updater.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  alias: { electron: electronStub },
+  outfile: updaterBundle,
+  logLevel: 'silent',
+})
+const { compareVersions } = await import(pathToFileURL(updaterBundle).href)
+const orderings = [
+  // Numeric prerelease identifiers rank by value: the string comparison this
+  // replaced put rc.10 BELOW rc.9 and reported a newer build as current.
+  ['0.1.5-rc.10', '0.1.5-rc.9', 1],
+  ['0.1.5-rc.9', '0.1.5-rc.10', -1],
+  ['0.1.5-rc.2', '0.1.5-rc.2', 0],
+  // A release outranks any prerelease of the same core version.
+  ['0.1.5', '0.1.5-rc.10', 1],
+  ['0.1.5-rc.10', '0.1.5', -1],
+  // Numeric identifiers rank below alphanumeric ones; a shorter prefix loses.
+  ['1.0.0-alpha.beta', '1.0.0-alpha.1', 1],
+  ['1.0.0-alpha', '1.0.0-alpha.1', -1],
+  // Core numbers still win over everything else.
+  ['0.2.0', '0.1.9', 1],
+  ['0.1.5', '0.1.5', 0],
+]
+for (const [left, right, expected] of orderings) {
+  const actual = compareVersions(left, right)
+  if (Math.sign(actual) !== expected) {
+    throw new Error('compareVersions(' + left + ', ' + right + ') = ' + actual + ', expected ' + expected)
+  }
+}
+console.log('✓ compareVersions orders core, release-over-prerelease, and numeric prerelease ranks')
 
 const payload = Buffer.from('desktop-update-payload')
 const payloadHash = createHash('sha256').update(payload).digest('hex')

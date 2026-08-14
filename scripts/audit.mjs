@@ -8,6 +8,7 @@
  */
 
 import { readFileSync, rmSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -102,6 +103,24 @@ const versionText = await settingsPage.locator('#versions').textContent() ?? ''
 check('independent version display', versionText.includes('桌面客户端 v' + desktopVersion) && versionText.includes('内置 dsh ' + dshVersion), versionText)
 const publicSettingsResponse = await fetch(settingsUrl.origin + '/desktop/settings')
 check('public settings path rejected', publicSettingsResponse.status === 404, String(publicSettingsResponse.status))
+// DNS rebinding: a name that resolves to 127.0.0.1 reaches this server under
+// the attacker's origin. The private path is the real gate, but the Host check
+// means a rebound request never gets as far as needing it.
+// Raw http.request, not fetch: fetch owns the Host header and would send the
+// real authority no matter what this asked for.
+const rebindStatus = await new Promise((resolve, reject) => {
+  const req = httpRequest({
+    host: '127.0.0.1',
+    port: Number(settingsUrl.port),
+    path: settingsUrl.pathname + 'desktop/status',
+    headers: { host: 'rebind.example' },
+  }, res => { res.resume(); resolve(res.statusCode) })
+  req.once('error', reject)
+  req.end()
+})
+check('foreign Host header rejected', rebindStatus === 403, String(rebindStatus))
+const nosniff = publicSettingsResponse.headers.get('x-content-type-options')
+check('settings server sends nosniff', nosniff === 'nosniff', String(nosniff))
 await settingsPage.close()
 
 // The official settings dialog remains operable around both append-only

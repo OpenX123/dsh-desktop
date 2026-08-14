@@ -18,13 +18,13 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, session, shell, Tray } from 'electron'
 import {
   AUTO_CHECK_DELAY_MS,
   DesktopUpdater,
@@ -74,8 +74,21 @@ function loadSettings(): ClientSettings {
 }
 
 function saveSettings(settings: ClientSettings): void {
-  mkdirSync(clientHome(), { recursive: true })
-  writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n')
+  // The document holds no credential, but it does hold the address every
+  // session connects to. On a shared POSIX machine the default umask would
+  // leave that world-readable (and, worse, group-writable under a lax umask).
+  mkdirSync(clientHome(), { recursive: true, mode: 0o700 })
+  writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+  // The mode above applies only when the file is created, so an install that
+  // predates it would keep its old permissions forever. chmod every save
+  // instead; on Windows it is a no-op, and a read-only path is not worth
+  // failing a settings write over.
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(clientHome(), 0o700)
+      chmodSync(SETTINGS_FILE, 0o600)
+    } catch { /* best effort: the write itself already succeeded */ }
+  }
 }
 
 /** Merge settings and persist. `unset` drops keys so a later save cannot leak them. */
@@ -106,6 +119,49 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Loopback origins are the client's own surfaces; anything else is a
+ * user-configured remote. IPv6 hostnames arrive bracketed from `URL`, which is
+ * the only spelling that can appear here.
+ */
+function originIsLoopback(value: string): boolean {
+  try {
+    const host = new URL(value).hostname
+    return host === '127.0.0.1' || host === 'localhost' || host === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a navigation is the same server telling us to use TLS. A bare
+ * hostname normalizes to `http://`, so a Web UI that redirects plaintext to
+ * its own HTTPS origin is the ordinary case, not a detour: same host, same
+ * port, scheme strictly better. Anything else is a real origin change.
+ */
+function isSecureUpgrade(from: string, to: string): boolean {
+  try {
+    const before = new URL(from)
+    const after = new URL(to)
+    return before.protocol === 'http:' && after.protocol === 'https:'
+      && before.hostname === after.hostname && before.port === after.port
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Environment overrides are development seats. A packaged client must not be
+ * steerable by ambient environment: a variable left by an installer, a login
+ * script, or another application would otherwise redirect the spawned runtime,
+ * the Smart-mode probe, or the update feed without the user ever seeing it.
+ * DSH_DESKTOP_ALLOW_UNSAFE=1 keeps the escape hatch for deliberate debugging.
+ */
+function devOverride(name: string): string | undefined {
+  if (app.isPackaged && process.env.DSH_DESKTOP_ALLOW_UNSAFE !== '1') return undefined
+  return process.env[name]
 }
 
 /** Whether persisted settings currently select the reusable remote origin. */
@@ -236,7 +292,7 @@ class BundledRuntimeMissingError extends Error {
 }
 
 function resolveDshCommand(): DshCommand {
-  const explicit = process.env.DSH_DESKTOP_DSH
+  const explicit = devOverride('DSH_DESKTOP_DSH')
   if (explicit !== undefined && explicit.trim() !== '') {
     return { command: explicit, args: [], label: explicit, source: 'override' }
   }
@@ -258,10 +314,23 @@ function resolveDshCommand(): DshCommand {
   return { command: 'dsh', args: [], label: 'dsh', source: 'path' }
 }
 
-/** Parse the readiness line the official Web app prints once the server binds. */
+/**
+ * Parse the readiness line the official Web app prints once the server binds.
+ * The line comes from a child's stdout, so the value is only accepted as a
+ * navigation target after it parses as an http(s) URL — the window must never
+ * be pointed at a `file:`/`javascript:` string a damaged or substituted
+ * runtime happened to print.
+ */
 function parseReadiness(line: string): string | undefined {
   const match = /^dsh web:\s+(\S+)/.exec(line)
-  return match?.[1]
+  const candidate = match?.[1]
+  if (candidate === undefined) return undefined
+  try {
+    const url = new URL(candidate)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? candidate : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** One `dsh web` child generation: process + its own lifecycle listeners. */
@@ -480,7 +549,9 @@ function relaunchDelayMs(remainingRetries: number): number {
  * so conversations (like the live one in the browser) sync in real time. Only
  * when nothing answers does the client launch its own local `dsh web`.
  */
-const DEFAULT_WEB_PROBE_URL = process.env.DSH_DESKTOP_PROBE_URL ?? 'http://127.0.0.1:3080'
+function defaultWebProbeUrl(): string {
+  return devOverride('DSH_DESKTOP_PROBE_URL') ?? 'http://127.0.0.1:3080'
+}
 
 /** The current Web UI origin: the probed/configured address, or the local child's URL. */
 let configuredTarget: string | undefined
@@ -524,9 +595,20 @@ async function waitForWebUiReady(base: string): Promise<void> {
   throw new Error('dsh web reported readiness but did not accept API requests')
 }
 
-/** Open external links in the system browser; never in a client window. */
+/**
+ * Open external links in the system browser; never in a client window.
+ * Parsed rather than prefix-matched: the scheme is what decides, and a prefix
+ * test both misses `HTTPS://` and would accept a lookalike like
+ * `http://x@evil` only by accident of spelling.
+ */
 function openExternal(url: string): void {
-  if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return
+  }
+  if (parsed.protocol === 'http:' || parsed.protocol === 'https:') void shell.openExternal(url)
 }
 
 /** The official Web UI origin (the window must stay inside it). */
@@ -751,6 +833,7 @@ function syncWindowBackgrounds(): void {
 }
 
 function onRendererTheme(event: Electron.IpcMainEvent, payload: unknown): void {
+  if (!bridgeCaller(event).trusted) return
   if (typeof payload !== 'object' || payload === null) return
   const body = payload as { dark?: unknown; mode?: unknown }
   if (typeof body.dark !== 'boolean') return
@@ -830,7 +913,6 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      additionalArguments: ['--dsh-username=' + userInfo().username],
       preload: fileURLToPath(new URL('./preload.cjs', import.meta.url)),
     },
   })
@@ -849,13 +931,29 @@ function createWindow(): void {
     openExternal(url)
     return { action: 'deny' }
   })
-  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+  // The window must stay inside the active Web UI origin. Both events matter:
+  // will-navigate covers a navigation the page starts, will-redirect covers the
+  // server-side 30x that follows one — an open redirect on the target origin
+  // would otherwise land a third-party document in the window that carries the
+  // desktop preload. Unknown target = deny: during startup and reconnection
+  // there is no origin to be inside of.
+  const guardNavigation = (event: Electron.Event, targetUrl: string): void => {
+    if (targetUrl.startsWith('data:')) return
     const allowedTarget = currentTarget()
-    if (allowedTarget !== undefined && appOrigin(targetUrl) !== appOrigin(allowedTarget)) {
-      event.preventDefault()
-      openExternal(targetUrl)
+    if (allowedTarget !== undefined && appOrigin(targetUrl) === appOrigin(allowedTarget)) return
+    // Follow the configured server's own HTTPS upgrade rather than bouncing
+    // the user to a browser: the target moves with it, so the bridge's origin
+    // check keeps matching the document actually on screen.
+    if (allowedTarget !== undefined && configuredTarget === allowedTarget && isSecureUpgrade(allowedTarget, targetUrl)) {
+      configuredTarget = appOrigin(targetUrl)
+      console.log('[desktop] target upgraded to HTTPS: ' + configuredTarget)
+      return
     }
-  })
+    event.preventDefault()
+    openExternal(targetUrl)
+  }
+  mainWindow.webContents.on('will-navigate', guardNavigation)
+  mainWindow.webContents.on('will-redirect', guardNavigation)
   // An unreachable Web UI (connect mode) must not strand the user: offer
   // retry or the connection-settings window.
   mainWindow.webContents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
@@ -930,8 +1028,15 @@ function openSettingsWindow(): void {
   settingsWindow.on('closed', () => { settingsWindow = null })
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   settingsWindow.webContents.on('will-navigate', (event, targetUrl) => {
-    const allowed = 'http://127.0.0.1:' + String(settingsServerPort) + settingsServerPath
-    if (!targetUrl.startsWith(allowed)) event.preventDefault()
+    // Compare parsed origin + path prefix rather than the raw string: a prefix
+    // test on the whole URL is decided by spelling (`...token/x` vs a
+    // credential-prefixed lookalike), not by where the request actually goes.
+    const allowed = new URL('http://127.0.0.1:' + String(settingsServerPort) + settingsServerPath)
+    try {
+      const target = new URL(targetUrl)
+      if (target.origin === allowed.origin && target.pathname.startsWith(allowed.pathname)) return
+    } catch { /* unparseable: deny below */ }
+    event.preventDefault()
   })
   void settingsWindow.loadURL('http://127.0.0.1:' + String(settingsServerPort) + settingsServerPath)
 }
@@ -978,8 +1083,13 @@ function refreshTrayMenu(): void {
   tray.setContextMenu(menu)
 }
 
-/** The connection facts shared by the settings server and the IPC bridge. */
-function getStatusJson(): Record<string, unknown> {
+/**
+ * The connection facts shared by the settings server and the IPC bridge.
+ * `includeLocalDetail` is false for a remote page: the child's pid and the
+ * runtime's last error (which carries local paths) describe this machine, and
+ * a configured remote origin has no business reading them.
+ */
+function getStatusJson(includeLocalDetail = true): Record<string, unknown> {
   const settings = loadSettings()
   const savedServerUrl = normalizeServerUrl(settings.serverUrl)
   return {
@@ -990,9 +1100,52 @@ function getStatusJson(): Record<string, unknown> {
     savedServerUrl: savedServerUrl ?? '',
     selectedMode: usesConfiguredServer(settings) ? 'connect' : 'smart',
     canSwitch: savedServerUrl !== undefined,
-    ...webUi?.pid() !== undefined && { childPid: webUi.pid() },
-    ...webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
+    ...includeLocalDetail && webUi?.pid() !== undefined && { childPid: webUi.pid() },
+    ...includeLocalDetail && webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
   }
+}
+
+/** Who is calling the desktop bridge, from the main process's point of view. */
+interface BridgeCaller {
+  /** The main window's top frame, showing an origin this client itself selected. */
+  trusted: boolean
+  /** That origin is a configured remote, not one of the client's own loopback surfaces. */
+  remote: boolean
+}
+
+const UNTRUSTED_CALLER: BridgeCaller = { trusted: false, remote: true }
+
+/**
+ * Resolve an IPC sender to a trust decision. The preload rides on whatever the
+ * window loads, and in Connect mode that is an address the user typed — a page
+ * served there must not be able to silently repoint the client or start an
+ * installer. Only the main window's TOP frame, showing the origin the client
+ * currently targets (or the client's own loading document), may drive the
+ * bridge; a remote origin that does is additionally treated as remote, which
+ * costs it the local details and adds a native confirmation to state changes.
+ */
+function bridgeCaller(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): BridgeCaller {
+  if (mainWindow === null || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return UNTRUSTED_CALLER
+  let frameUrl: string
+  try {
+    const frame = event.senderFrame
+    // Sub-frames do not receive this preload today; deny explicitly so that
+    // stays true if nodeIntegrationInSubFrames is ever turned on.
+    if (frame === null || frame.parent !== null) return UNTRUSTED_CALLER
+    frameUrl = frame.url
+  } catch {
+    // The frame was destroyed between send and dispatch.
+    return UNTRUSTED_CALLER
+  }
+  if (frameUrl.startsWith('data:')) return { trusted: loadingDocumentActive, remote: false }
+  const target = currentTarget()
+  const origin = appOrigin(frameUrl)
+  if (target === undefined || origin === '' || origin !== appOrigin(target)) return UNTRUSTED_CALLER
+  return { trusted: true, remote: !originIsLoopback(origin) }
+}
+
+function bridgeDenied(): Error {
+  return new Error('desktop bridge: sender is not the active Web UI')
 }
 
 /** Replace the current page with the local startup surface before recovery. */
@@ -1053,10 +1206,12 @@ function saveUpdatePersistence(next: { dismissedVersion?: string; lastCheckedAt?
 }
 
 function createDesktopUpdater(): DesktopUpdater {
+  // Same gate as devOverride(): the packaged client keeps its own feed.
+  const allowFeedOverride = !app.isPackaged || process.env.DSH_DESKTOP_ALLOW_UNSAFE === '1'
   return new DesktopUpdater({
     currentVersion: desktopClientVersion(),
-    feedUrl: defaultUpdateFeedUrl(),
-    githubApiUrl: defaultGithubApiUrl(),
+    feedUrl: defaultUpdateFeedUrl(allowFeedOverride),
+    githubApiUrl: defaultGithubApiUrl(allowFeedOverride),
     platform: process.platform,
     arch: process.arch,
     packaged: app.isPackaged,
@@ -1127,6 +1282,29 @@ function updateDialogCopy(): {
     failed: 'Could not check for updates',
     checking: 'Checking for updates…',
   }
+}
+
+/**
+ * A native confirmation for an action a page asked for. Native on purpose: the
+ * requesting document can neither draw this over its own UI, nor dismiss it,
+ * nor pre-click it.
+ */
+async function confirmSensitiveAction(message: string, detail: string): Promise<boolean> {
+  const chinese = localeChinese()
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'DeepSeek Harness Desktop',
+    message,
+    detail,
+    buttons: [chinese ? '取消' : 'Cancel', chinese ? '继续' : 'Continue'],
+    defaultId: 0,
+    cancelId: 0,
+  }
+  const owner = mainWindow
+  const { response } = owner === null || owner.isDestroyed()
+    ? await dialog.showMessageBox(options)
+    : await dialog.showMessageBox(owner, options)
+  return response === 1
 }
 
 let updateDialogOpen = false
@@ -1435,7 +1613,7 @@ function resolveRuntime(): void {
     startLocalRuntime(generation)
     return
   }
-  void probeWebUi(DEFAULT_WEB_PROBE_URL).then((probed) => {
+  void probeWebUi(defaultWebProbeUrl()).then((probed) => {
     if (quitting || generation !== connectionGeneration) return
     if (probed !== undefined) {
       configuredTarget = probed
@@ -1473,6 +1651,45 @@ function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?
   } catch (error) {
     return { saved: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * The guarded entry point for an address change. Two native confirmations,
+ * each for a different reason: one when a remote page is the one asking to
+ * repoint the client (a persistent redirect is the whole prize for a hostile
+ * or compromised Web UI), one when the address itself is plaintext HTTP off
+ * this machine — the official UI carries the API key and every message, and
+ * http:// puts both on the wire in clear.
+ */
+async function requestServerUrlSave(serverUrl: unknown, remoteCaller: boolean): Promise<{ saved: boolean; error?: string }> {
+  const chinese = localeChinese()
+  const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
+  const explicit = raw === '' ? undefined : normalizeServerUrl(raw)
+  if (raw !== '' && explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
+  const cancelled = { saved: false, error: chinese ? '已取消' : 'Cancelled' }
+
+  if (remoteCaller) {
+    const confirmed = await confirmSensitiveAction(
+      chinese ? '当前页面请求更改 Web UI 连接地址' : 'The current page asked to change the Web UI address',
+      (chinese
+        ? '这会让客户端在以后每次启动时都连接到新地址。请求来自：'
+        : 'This repoints the client on every future launch. Requested by: ')
+      + (currentTarget() ?? '') + '\n'
+      + (chinese ? '新地址：' : 'New address: ') + (explicit ?? (chinese ? '（智能模式）' : '(Smart mode)')),
+    )
+    if (!confirmed) return cancelled
+  }
+  if (explicit !== undefined && explicit.startsWith('http://') && !originIsLoopback(explicit)) {
+    const confirmed = await confirmSensitiveAction(
+      chinese ? '该地址使用明文 HTTP' : 'That address uses plaintext HTTP',
+      (chinese
+        ? 'API Key、全部会话内容都会以未加密方式在网络上传输，同网络中的任何人都可以读取或篡改。可用的话请改用 https://。\n\n地址：'
+        : 'The API key and every message travel unencrypted; anyone on the path can read or alter them. Prefer https:// when the server offers it.\n\nAddress: ')
+      + explicit,
+    )
+    if (!confirmed) return cancelled
+  }
+  return saveServerUrlAndReconnect(serverUrl)
 }
 
 /** Toggle between Smart local selection and the saved fixed origin. */
@@ -1557,6 +1774,19 @@ function installMenu(): void {
 /** Start the private-path loopback settings server and resolve only once bound. */
 function startSettingsServer(): Promise<number> {
   const server = createServer((req, res) => {
+    // Defence in depth behind the unguessable path: these headers cost nothing
+    // and the Host check closes DNS rebinding, where a name that resolves to
+    // 127.0.0.1 would otherwise reach this server under an attacker's origin.
+    res.setHeader('x-content-type-options', 'nosniff')
+    res.setHeader('x-frame-options', 'DENY')
+    res.setHeader('referrer-policy', 'no-referrer')
+    const port = String(settingsServerPort)
+    const host = (req.headers.host ?? '').toLowerCase()
+    if (host !== '127.0.0.1:' + port && host !== 'localhost:' + port && host !== '[::1]:' + port) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('forbidden')
+      return
+    }
     const url = new URL(req.url ?? '/', 'http://dsh.internal')
     if (!url.pathname.startsWith(settingsServerPath)) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -1617,9 +1847,18 @@ function startSettingsServer(): Promise<number> {
           if (bodyTooLarge) return
           try {
             const parsed = JSON.parse(body) as { serverUrl?: unknown }
-            const result = saveServerUrlAndReconnect(parsed.serverUrl)
-            res.writeHead(result.saved ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify(result))
+            // This page is the client's own; the plaintext-HTTP warning inside
+            // still applies to what the user typed into it.
+            // The confirmation dialog inside can reject if its owner window
+            // goes away while it is open. Without this catch the response
+            // would never be written and the page would hang on the fetch.
+            void requestServerUrlSave(parsed.serverUrl, false).then((result) => {
+              res.writeHead(result.saved ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify(result))
+            }, (error: unknown) => {
+              res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify({ saved: false, error: error instanceof Error ? error.message : String(error) }))
+            })
           } catch (error) {
             res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
             res.end(JSON.stringify({ saved: false, error: error instanceof Error ? error.message : String(error) }))
@@ -1759,8 +1998,29 @@ if (!gotLock) {
     mainWindow.focus()
   })
 
+  // Every webContents, including any the runtime or a dependency creates
+  // later, inherits the same rule: nothing opens a second window, http(s)
+  // links leave for the system browser, everything else is dropped.
+  app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      openExternal(url)
+      return { action: 'deny' }
+    })
+  })
+
   void app.whenReady().then(async () => {
     app.setName('DeepSeek Harness Desktop')
+    // Electron grants most permission requests when an app installs no
+    // handler. The official Web UI asks for none of them (its only clipboard
+    // use is writeText), and in Connect mode the page doing the asking is a
+    // remote origin — so: deny by default, with the one grant a copy button
+    // legitimately needs.
+    const ALLOWED_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen'])
+    session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+      callback(ALLOWED_PERMISSIONS.has(permission))
+    })
+    session.defaultSession.setPermissionCheckHandler((_contents, permission) => ALLOWED_PERMISSIONS.has(permission))
+    session.defaultSession.setDevicePermissionHandler(() => false)
     // Packaged macOS builds use the bundle icon. Do not replace it at runtime
     // with the pre-masked PNG: macOS 26 adds its own enclosure around that
     // image and produces a visible double border. An unpackaged run has no
@@ -1785,24 +2045,59 @@ if (!gotLock) {
     powerMonitor.on('resume', () => { scheduleWindowHealthCheck('system resume', 3_000) })
     windowHealthTimer = setInterval(() => { void recoverBlankWindow('periodic health check') }, WINDOW_HEALTH_INTERVAL_MS)
     windowHealthTimer.unref()
-    // The official page's enhanced-features card bridges through these.
-    ipcMain.handle('desktop:connection:status', () => getStatusJson())
-    ipcMain.handle('desktop:connection:save', (_event, serverUrl: unknown) => {
-      return saveServerUrlAndReconnect(serverUrl)
+    // The official page's enhanced-features card bridges through these. Every
+    // handler resolves its sender first (see bridgeCaller): the preload rides
+    // on whatever the window loads, so "the renderer asked" is not by itself
+    // evidence that the client's own UI asked.
+    ipcMain.handle('desktop:connection:status', (event) => {
+      const caller = bridgeCaller(event)
+      if (!caller.trusted) throw bridgeDenied()
+      return getStatusJson(!caller.remote)
     })
-    ipcMain.handle('desktop:connection:switch', () => switchConnectionMode())
-    ipcMain.on('desktop:open-connection-settings', () => { openSettingsWindow() })
-    ipcMain.handle('desktop:update:status', () => desktopUpdater?.getState())
-    ipcMain.handle('desktop:update:check', () => {
+    ipcMain.handle('desktop:connection:save', async (event, serverUrl: unknown) => {
+      const caller = bridgeCaller(event)
+      if (!caller.trusted) throw bridgeDenied()
+      return requestServerUrlSave(serverUrl, caller.remote)
+    })
+    ipcMain.handle('desktop:connection:switch', (event) => {
+      if (!bridgeCaller(event).trusted) throw bridgeDenied()
+      return switchConnectionMode()
+    })
+    ipcMain.on('desktop:open-connection-settings', (event) => {
+      if (!bridgeCaller(event).trusted) return
+      openSettingsWindow()
+    })
+    ipcMain.handle('desktop:update:status', (event) => {
+      if (!bridgeCaller(event).trusted) throw bridgeDenied()
+      return desktopUpdater?.getState()
+    })
+    ipcMain.handle('desktop:update:check', (event) => {
+      if (!bridgeCaller(event).trusted) throw bridgeDenied()
       desktopUpdater?.resetDismiss()
       return desktopUpdater?.check() ?? { hasUpdate: false }
     })
-    ipcMain.handle('desktop:update:install', async () => {
+    ipcMain.handle('desktop:update:install', async (event) => {
+      const caller = bridgeCaller(event)
+      if (!caller.trusted) throw bridgeDenied()
+      // Installing runs an executable this machine downloaded. A remote page
+      // may ask; only the person at the keyboard may answer.
+      if (caller.remote) {
+        const chinese = localeChinese()
+        const confirmed = await confirmSensitiveAction(
+          chinese ? '当前页面请求下载并安装更新' : 'The current page asked to download and install an update',
+          (chinese ? '安装程序会在本机运行。请求来自：' : 'The installer will run on this machine. Requested by: ')
+          + (currentTarget() ?? ''),
+        )
+        if (!confirmed) return { started: false, error: chinese ? '已取消' : 'Cancelled' }
+      }
       const result = await installDesktopUpdate()
       if (result.started) scheduleQuitAfterWindowsInstall()
       return result
     })
-    ipcMain.handle('desktop:update:dismiss', () => { desktopUpdater?.dismiss() })
+    ipcMain.handle('desktop:update:dismiss', (event) => {
+      if (!bridgeCaller(event).trusted) return
+      desktopUpdater?.dismiss()
+    })
     await guiPathReady
     boot()
     scheduleAutoUpdateCheck()
