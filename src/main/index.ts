@@ -1222,6 +1222,8 @@ function errorPageUrl(copy: {
   retry: string
   settings: string
   quit: string
+  /** Offered only when a pinned address failed: leave it for Smart mode. */
+  useSmart?: string
 }): string {
   const chinese = localeChinese()
   const fact = (label: string, value: string): string => value === ''
@@ -1259,6 +1261,9 @@ function errorPageUrl(copy: {
     + '<dl class="facts">' + fact(copy.addressLabel, copy.address) + fact(copy.reasonLabel, copy.reason) + '</dl>'
     + '<div class="actions">'
     + '<button id="error-retry" class="primary" type="button">' + escapeHtml(copy.retry) + '</button>'
+    + (copy.useSmart === undefined
+      ? ''
+      : '<button id="error-use-smart" type="button">' + escapeHtml(copy.useSmart) + '</button>')
     + '<button id="error-settings" type="button">' + escapeHtml(copy.settings) + '</button>'
     + '<button id="error-quit" class="ghost" type="button">' + escapeHtml(copy.quit) + '</button>'
     + '</div></main></body></html>'
@@ -1323,6 +1328,11 @@ function showConnectionError(failure: ConnectionFailure): void {
     retry: chinese ? '重试' : 'Retry',
     settings: chinese ? '连接设置…' : 'Connection settings…',
     quit: chinese ? '退出' : 'Quit',
+    // Only a pinned address has a Smart mode to fall back to; a local runtime
+    // that failed is already what Smart would have chosen.
+    ...usesConfiguredServer(loadSettings()) && {
+      useSmart: chinese ? '切换到智能模式' : 'Switch to Smart mode',
+    },
   })).then(() => {
     if (window !== mainWindow || window.isDestroyed() || window.webContents.isDestroyed()) return
     // The page's own CSP forbids inline script, so the seats are bound from
@@ -1330,6 +1340,7 @@ function showConnectionError(failure: ConnectionFailure): void {
     void window.webContents.executeJavaScript(
       '(() => { const bind = (id, run) => { const b = document.getElementById(id); if (b !== null) b.onclick = run };'
       + ' bind("error-retry", () => { window.desktop?.local?.retry?.() });'
+      + ' bind("error-use-smart", () => { window.desktop?.local?.useSmart?.() });'
       + ' bind("error-settings", () => { window.desktop?.openConnectionSettings?.() });'
       + ' bind("error-quit", () => { window.desktop?.local?.quit?.() }) })();',
       true,
@@ -1647,7 +1658,7 @@ function createWindow(): void {
  * Navigate the existing loading/client window to one official Web UI origin.
  * `force` marks a reconnect the user explicitly asked for: startup resolves to
  * the origin already on screen all the time and must not reload it, but
- * "保存并重连" resolving to the same origin has to rebuild the session anyway —
+ * "保存并连接" resolving to the same origin has to rebuild the session anyway —
  * doing nothing leaves the card's "正在重连…" note true forever.
  */
 function loadMainWindow(url: string, force = false): void {
@@ -1710,7 +1721,10 @@ function openSettingsWindow(): void {
  * menu; Windows/Linux show the menu on left-click (platform default).
  */
 function createTray(): void {
-  const icon = nativeImage.createFromPath(join(APP_DIR, 'resources', 'iconMenuTemplate.png'))
+  // macOS recolours a Template image to match the menu bar automatically.
+  // Windows renders the source pixels as-is, so choose the opposite-colour
+  // glyph for its current system theme and update it when that theme changes.
+  const icon = trayImage()
   if (icon.isEmpty()) return
   tray = new Tray(icon)
   tray.setToolTip('DeepSeek Harness')
@@ -1719,6 +1733,20 @@ function createTray(): void {
     tray.on('right-click', () => { tray?.popUpContextMenu(Menu.buildFromTemplate(trayMenuTemplate())) })
   }
   refreshTrayMenu()
+}
+
+function trayImage(): Electron.NativeImage {
+  const iconName = process.platform === 'win32' && nativeTheme.shouldUseDarkColors
+    ? 'iconTrayWhite.png'
+    : 'iconMenuTemplate.png'
+  return nativeImage.createFromPath(join(APP_DIR, 'resources', iconName))
+}
+
+/** Keep the Windows tray glyph legible when the system switches theme. */
+function syncTrayImage(): void {
+  if (tray === null || process.platform !== 'win32') return
+  const icon = trayImage()
+  if (!icon.isEmpty()) tray.setImage(icon)
 }
 
 function trayMenuTemplate(): Electron.MenuItemConstructorOptions[] {
@@ -2174,26 +2202,36 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + 'else if(u.phase==="error")line=u.error||"更新失败";'
   + '$("update-status").textContent=line;$("update-status").hidden=!line;'
   + '$("update-notes").textContent=(u.info&&u.info.notes)||"";}'
-  + 'function localLabel(s){if(s.mode!=="local")return "";'
-  + 'return s.runtimeSource==="installed"?"（本机安装的 dsh）":s.runtimeSource==="npx"?"（npx 缓存的 dsh）"'
-  + ':s.runtimeSource==="bundled"?"（内置运行时）":"";}'
+  // Named by WHO started the runtime, then which dsh it is. "本地"/"内置" used
+  // to overlap: a client-spawned child was labelled 本地 even when it ran the
+  // 内置 copy, and a reused instance the user started themselves got neither.
+  + 'function sourceLabel(s){'
+  + 'if(s.mode==="probe")return "复用你已启动的 dsh";'
+  + 'if(s.mode==="connect")return "固定地址";'
+  + 'const v=s.installedDshVersion?" v"+s.installedDshVersion:"";'
+  + 'return s.runtimeSource==="installed"?"客户端启动·本机安装的 dsh"+v'
+  + ':s.runtimeSource==="npx"?"客户端启动·npx 缓存的 dsh"+v'
+  + ':s.runtimeSource==="bundled"?"客户端启动·内置运行时":"客户端启动";}'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
-  + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web"+localLabel(s);'
+  + 'const modeLabel=sourceLabel(s);'
   + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
   + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用")'
   + '+(s.installedDshVersion?" · 本机 dsh "+s.installedDshVersion:"");'
   + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";'
-  + '$("switch").hidden=!s.canSwitch;$("switch").textContent=s.selectedMode==="connect"?"切换到本地":"切换到远程";'
+  // Saving both records and applies the address. The secondary action exists
+  // only while an address is pinned, where it has one unambiguous meaning.
+  + '$("switch").hidden=s.selectedMode!=="connect";$("switch").textContent="切换到智能模式";'
   // A live official instance we are NOT already on: offer its address instead
   // of making the user type it. Never overwrite a saved or typed value.
   + 'if(!$("url").value){try{const p=await(await fetch("desktop/probe")).json();'
   + 'if(p.url&&p.url!==s.targetUrl&&!$("url").value){$("url").value=p.url;'
-  + '$("note").textContent="检测到本机正在运行的官方实例，地址已填入，点击「保存并重连」即可固定连接。"}}catch(e){}}'
+  + '$("note").textContent="检测到你已启动的 dsh。点击「保存并连接」即可使用；它停止时客户端会自动回落。"}}catch(e){}}'
   + 'renderUpdate(await(await fetch("desktop/update")).json());'
   + '}catch(e){$("status").textContent="状态不可用"}}'
   + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
   + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
-  + '$("note").textContent=j.saved?"已保存，正在重连…":("保存失败："+(j.error||"未知错误"));'
+  + '$("note").textContent=j.saved?(j.mode==="smart"?"正在连接（智能模式：该实例停止时自动回落）":"已保存，正在连接…")'
+  + ':("保存失败："+(j.error||"未知错误"));'
   + 'if(j.saved)setTimeout(()=>window.close(),900)}catch(e){$("note").textContent="保存失败："+e.message}};'
   + '$("switch").onclick=async()=>{try{$("switch").disabled=true;const r=await fetch("desktop/switch",{method:"POST"});const j=await r.json();'
   + '$("note").textContent=j.switched?"正在切换…":("切换失败："+(j.error||"未知错误"));if(!j.switched)$("switch").disabled=false;'
@@ -2268,7 +2306,7 @@ function settingsPageHtml(): string {
     + '<div class="section-title">连接<span class="badge">增强功能</span>'
     + '<div class="actions">'
     + '<button id="switch" class="primary" hidden>切换连接</button>'
-    + '<button id="save">保存并重连</button>'
+    + '<button id="save">保存并连接</button>'
     + '</div></div>'
     + '<p class="status-text" id="status">连接状态读取中…</p>'
     + '<input id="url" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）" spellcheck="false">'
@@ -2398,20 +2436,30 @@ function applyConnectionSettings(settings: ClientSettings, force = false): void 
   else resolveRuntime(force)
 }
 
-/** Save an address edit. A non-empty valid address becomes the active target. */
-function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?: string } {
+/**
+ * Save an address edit. A non-empty valid address becomes the active target —
+ * except the default probe address, which Smart mode already prefers.
+ *
+ * Pinning that one origin is strictly worse than Smart: identical while it is
+ * up, and on the wrong side of the only difference that matters — when the
+ * instance goes away, Connect mode holds the dead address and stops at the
+ * failure surface, while Smart falls through to a local runtime. The address
+ * is still recorded, so the switch button can pin it as a deliberate act.
+ */
+function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; mode?: 'smart' | 'connect'; error?: string } {
   try {
     const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
     if (raw === '') {
       patchSettings({ connectionMode: 'smart' }, ['serverUrl'])
       applyConnectionSettings(loadSettings(), true)
-      return { saved: true }
+      return { saved: true, mode: 'smart' }
     }
     const explicit = normalizeServerUrl(raw)
     if (explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
-    patchSettings({ serverUrl: explicit, connectionMode: 'connect' })
+    const mode = explicit === normalizeServerUrl(defaultWebProbeUrl()) ? 'smart' : 'connect'
+    patchSettings({ serverUrl: explicit, connectionMode: mode })
     applyConnectionSettings(loadSettings(), true)
-    return { saved: true }
+    return { saved: true, mode }
   } catch (error) {
     return { saved: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -2425,7 +2473,7 @@ function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?
  * this machine — the official UI carries the API key and every message, and
  * http:// puts both on the wire in clear.
  */
-async function requestServerUrlSave(serverUrl: unknown, remoteCaller: boolean): Promise<{ saved: boolean; error?: string }> {
+async function requestServerUrlSave(serverUrl: unknown, remoteCaller: boolean): Promise<{ saved: boolean; mode?: 'smart' | 'connect'; error?: string }> {
   const chinese = localeChinese()
   const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
   const explicit = raw === '' ? undefined : normalizeServerUrl(raw)
@@ -2463,7 +2511,7 @@ function switchConnectionMode(): { switched: boolean; mode?: 'smart' | 'connect'
   try {
     const current = loadSettings()
     const explicit = normalizeServerUrl(current.serverUrl)
-    if (explicit === undefined) return { switched: false, error: '请先保存远程 Web UI 地址' }
+    if (explicit === undefined) return { switched: false, error: '请先保存 Web UI 地址' }
     const mode = usesConfiguredServer(current) ? 'smart' : 'connect'
     patchSettings({ serverUrl: explicit, connectionMode: mode })
     applyConnectionSettings(loadSettings(), true)
@@ -2852,6 +2900,7 @@ if (!gotLock) {
     // Paint immediately. Runtime probing/boot continues behind this one window
     // and replaces the loading document with the official Web UI when ready.
     nativeTheme.on('updated', syncWindowBackgrounds)
+    nativeTheme.on('updated', syncTrayImage)
     ipcMain.on('desktop:theme', onRendererTheme)
     mainWindowRequested = true
     createWindow()
@@ -2901,6 +2950,15 @@ if (!gotLock) {
     ipcMain.on('desktop:local:quit', (event) => {
       if (!localDocumentCaller(event)) return
       app.quit()
+    })
+    // The way out of a pinned address that stopped answering. The address is
+    // kept, so switching back is one click once it is up again.
+    ipcMain.on('desktop:local:use-smart', (event) => {
+      if (!localDocumentCaller(event)) return
+      patchSettings({ connectionMode: 'smart' })
+      errorDocumentActive = false
+      showLoadingDocument()
+      applyConnectionSettings(loadSettings(), true)
     })
     ipcMain.handle('desktop:update:status', (event) => {
       const caller = bridgeCaller(event)

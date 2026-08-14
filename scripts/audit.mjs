@@ -53,7 +53,7 @@ const loadingVisible = await window.locator('#loading-status').waitFor({ state: 
   .then(() => true, () => false)
 check('startup loading window', loadingVisible, '#loading-status')
 
-await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
+await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, null, { timeout: 60000 })
 await window.waitForTimeout(1500)
 
 // A clean profile first shows the official notice, then the DeepSeek key

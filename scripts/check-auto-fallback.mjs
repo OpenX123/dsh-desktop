@@ -15,6 +15,7 @@ import { promisify } from 'node:util'
 import { _electron as electron } from 'playwright-core'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
+const RUNTIME_FIXTURE = join(APP_DIR, 'scripts', 'fixtures', 'fake-dsh.mjs')
 const checkHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-fallback-'))
 const desktopHome = join(checkHome, 'desktop')
 mkdirSync(desktopHome, { recursive: true })
@@ -48,6 +49,7 @@ Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
 electronEnv.DSH_HOME = join(checkHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = desktopHome
 electronEnv.DSH_DESKTOP_PROBE_URL = probeOrigin
+electronEnv.DSH_DESKTOP_DSH = RUNTIME_FIXTURE
 Reflect.deleteProperty(electronEnv, 'DSH_DESKTOP_SKIP_PROBE')
 electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
 
@@ -72,7 +74,7 @@ try {
     env: electronEnv,
   })
   let window = await app.firstWindow()
-  await window.waitForFunction(() => document.title === 'Probed Harness Fixture', { timeout: 10_000 })
+  await window.waitForFunction(() => document.title === 'Probed Harness Fixture', null, { timeout: 10_000 })
   const probed = await window.evaluate(() => window.desktop.connection.getStatus())
   if (probed.mode !== 'probe' || probed.targetUrl !== probeOrigin) {
     throw new Error('Smart mode did not select the probed instance: ' + JSON.stringify(probed))
@@ -83,7 +85,7 @@ try {
 
   let recovered = await waitForStatus(app, status => status.mode === 'local' && typeof status.childPid === 'number', 60_000)
   window = recovered.window
-  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  await window.waitForFunction(() => document.title === 'Installed Harness Fixture', null, { timeout: 20_000 })
   const firstChildPid = recovered.status.childPid
   console.log('✓ unavailable probed instance fell back to the managed local runtime (PID ' + String(firstChildPid) + ')')
 
@@ -95,7 +97,7 @@ try {
   recovered = await waitForStatus(app,
     status => status.mode === 'local' && typeof status.childPid === 'number' && status.childPid !== firstChildPid,
     60_000)
-  await recovered.window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  await recovered.window.waitForFunction(() => document.title === 'Installed Harness Fixture', null, { timeout: 20_000 })
   console.log('✓ exited managed runtime relaunched with a new PID (' + String(recovered.status.childPid) + ')')
 } finally {
   await app?.close().catch(() => {})

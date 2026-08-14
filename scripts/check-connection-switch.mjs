@@ -87,15 +87,34 @@ const address = remoteServer.address()
 if (typeof address !== 'object' || address === null) throw new Error('fixture server did not bind')
 const remoteOrigin = 'http://127.0.0.1:' + String(address.port)
 
-// Legacy documents had only serverUrl. They must still boot in Connect mode.
+// Legacy documents had only serverUrl. They must still boot in Pinned address mode.
 writeFileSync(join(desktopHome, 'settings.json'), JSON.stringify({ serverUrl: remoteOrigin }, null, 2) + '\n')
 
 const electronEnv = { ...process.env }
 Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
 electronEnv.DSH_HOME = join(checkHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = desktopHome
-electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
+// Keep Smart mode deterministic without booting the full bundled runtime:
+// this same live fixture is both the legacy pinned target and Smart's probe.
+electronEnv.DSH_DESKTOP_PROBE_URL = remoteOrigin
+Reflect.deleteProperty(electronEnv, 'DSH_DESKTOP_SKIP_PROBE')
 electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
+
+/** Poll through document swaps until the connection state settles. */
+async function waitForStatus(app, predicate, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs
+  let last
+  while (Date.now() < deadline) {
+    for (const window of app.windows()) {
+      try {
+        last = await window.evaluate(() => window.desktop?.connection.getStatus())
+        if (last && predicate(last)) return { window, status: last }
+      } catch { /* reconnecting replaces the current document */ }
+    }
+    await new Promise(resolve => setTimeout(resolve, 150))
+  }
+  throw new Error('status condition timed out: ' + JSON.stringify(last))
+}
 
 let app
 try {
@@ -104,10 +123,10 @@ try {
     env: electronEnv,
   })
   let window = await app.firstWindow()
-  await window.waitForFunction(() => document.title === 'Remote Harness Fixture', { timeout: 10_000 })
+  await window.waitForFunction(() => document.title === 'Remote Harness Fixture', null, { timeout: 10_000 })
   const legacyStatus = await window.evaluate(() => window.desktop.connection.getStatus())
   if (legacyStatus.selectedMode !== 'connect' || legacyStatus.savedServerUrl !== remoteOrigin || !legacyStatus.canSwitch) {
-    throw new Error('legacy remote settings were not exposed as switchable Connect mode: ' + JSON.stringify(legacyStatus))
+    throw new Error('legacy remote settings were not exposed as switchable Pinned address mode: ' + JSON.stringify(legacyStatus))
   }
   // will-redirect fires for EVERY frame, unlike will-navigate. Guarding it
   // without the isMainFrame test cancels this ordinary sub-frame 302 and pops
@@ -125,7 +144,7 @@ try {
   }
 
   await window.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3_000 })
-  if (await window.locator('#dsh-enhance-switch').textContent() !== '切换到本地'
+  if (await window.locator('#dsh-enhance-switch').textContent() !== '切换到智能模式'
     || await window.locator('#dsh-enhance-url').inputValue() !== remoteOrigin) {
     throw new Error('enhanced connection card did not expose the saved remote shortcut')
   }
@@ -133,32 +152,29 @@ try {
   await window.evaluate(() => { window.desktop.openConnectionSettings() })
   const remoteSettingsPage = await remoteSettingsPagePromise
   await remoteSettingsPage.waitForFunction(() => document.querySelector('#switch')?.hidden === false)
-  if (await remoteSettingsPage.locator('#switch').textContent() !== '切换到本地') {
-    throw new Error('remote shortcut did not offer local mode')
+  if (await remoteSettingsPage.locator('#switch').textContent() !== '切换到智能模式') {
+    throw new Error('pinned-address shortcut did not offer Smart mode')
   }
-  await remoteSettingsPage.close()
-
   const toSmart = await window.evaluate(() => window.desktop.connection.switchMode())
   if (!toSmart.switched || toSmart.mode !== 'smart') throw new Error('failed to switch to Smart mode: ' + JSON.stringify(toSmart))
-  window = app.windows()[0]
-  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  ({ window } = await waitForStatus(app, status => status.selectedMode === 'smart' && status.targetUrl !== ''))
   const smartSettings = JSON.parse(readFileSync(join(desktopHome, 'settings.json'), 'utf8'))
   if (smartSettings.serverUrl !== remoteOrigin || smartSettings.connectionMode !== 'smart') {
     throw new Error('Smart switch did not preserve the remote origin: ' + JSON.stringify(smartSettings))
   }
-  const smartSettingsPagePromise = app.waitForEvent('window')
-  await window.evaluate(() => { window.desktop.openConnectionSettings() })
-  const smartSettingsPage = await smartSettingsPagePromise
-  await smartSettingsPage.waitForFunction(() => document.querySelector('#switch')?.hidden === false)
-  if (await smartSettingsPage.locator('#switch').textContent() !== '切换到远程'
-    || await smartSettingsPage.locator('#url').inputValue() !== remoteOrigin) {
-    throw new Error('Smart shortcut did not retain the saved remote target')
+  await remoteSettingsPage.reload()
+  await remoteSettingsPage.waitForFunction(() => document.querySelector('#save')?.textContent === '保存并连接')
+  if (!await remoteSettingsPage.locator('#switch').isHidden()
+    || await remoteSettingsPage.locator('#save').textContent() !== '保存并连接'
+    || await remoteSettingsPage.locator('#url').inputValue() !== remoteOrigin) {
+    throw new Error('Smart mode did not retain the address behind one clear save-and-connect action')
   }
-  await smartSettingsPage.close()
+  await remoteSettingsPage.close()
+  await new Promise(resolve => setTimeout(resolve, 100))
 
   const toRemote = await window.evaluate(() => window.desktop.connection.switchMode())
-  if (!toRemote.switched || toRemote.mode !== 'connect') throw new Error('failed to switch back to Connect mode: ' + JSON.stringify(toRemote))
-  await window.waitForFunction(() => document.title === 'Remote Harness Fixture', { timeout: 10_000 })
+  if (!toRemote.switched || toRemote.mode !== 'connect') throw new Error('failed to switch back to Pinned address mode: ' + JSON.stringify(toRemote))
+  await window.waitForFunction(() => document.title === 'Remote Harness Fixture', null, { timeout: 10_000 })
   const remoteSettings = JSON.parse(readFileSync(join(desktopHome, 'settings.json'), 'utf8'))
   if (remoteSettings.serverUrl !== remoteOrigin || remoteSettings.connectionMode !== 'connect') {
     throw new Error('Connect switch was not persisted: ' + JSON.stringify(remoteSettings))
@@ -172,13 +188,12 @@ try {
   if (!backToSmart.switched || backToSmart.mode !== 'smart') {
     throw new Error('failed to return to Smart mode: ' + JSON.stringify(backToSmart))
   }
-  window = app.windows()[0]
-  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  ({ window } = await waitForStatus(app, status => status.selectedMode === 'smart' && status.targetUrl !== ''))
   await window.evaluate(() => { window.__dshReconnectMarker = 1 })
   const resaved = await window.evaluate(() => window.desktop.connection.saveServerUrl(''))
   if (!resaved.saved) throw new Error('saving the unchanged Smart selection failed: ' + JSON.stringify(resaved))
-  await window.waitForFunction(() => window.__dshReconnectMarker === undefined, { timeout: 30_000 })
-  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  await window.waitForFunction(() => window.__dshReconnectMarker === undefined, null, { timeout: 30_000 })
+  await waitForStatus(app, status => status.selectedMode === 'smart' && status.targetUrl !== '')
 
   console.log('✓ legacy remote configuration remains active')
   console.log('✓ a cross-origin sub-frame redirect is not treated as a top-frame navigation')

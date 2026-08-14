@@ -35,8 +35,12 @@ interface ConnectionStatus {
 /** The connection bridge: read/save the Web UI origin through the main process. */
 const connection = {
   getStatus: (): Promise<ConnectionStatus> => ipcRenderer.invoke('desktop:connection:status') as Promise<ConnectionStatus>,
-  saveServerUrl: (serverUrl: string): Promise<{ saved: boolean; error?: string }> =>
-    ipcRenderer.invoke('desktop:connection:save', serverUrl) as Promise<{ saved: boolean; error?: string }>,
+  saveServerUrl: (serverUrl: string): Promise<{ saved: boolean; mode?: 'smart' | 'connect'; error?: string }> =>
+    ipcRenderer.invoke('desktop:connection:save', serverUrl) as Promise<{
+      saved: boolean
+      mode?: 'smart' | 'connect'
+      error?: string
+    }>,
   switchMode: (): Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }> =>
     ipcRenderer.invoke('desktop:connection:switch') as Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }>,
   /** An official Web UI answering on the default port right now, if any. */
@@ -80,6 +84,8 @@ const update = {
 const local = {
   retry: (): void => { ipcRenderer.send('desktop:local:retry') },
   quit: (): void => { ipcRenderer.send('desktop:local:quit') },
+  /** Leave a pinned address for Smart mode, from the failure surface. */
+  useSmart: (): void => { ipcRenderer.send('desktop:local:use-smart') },
 }
 
 contextBridge.exposeInMainWorld('desktop', {
@@ -391,7 +397,7 @@ function injectEnhance(panel: Element): void {
     '<div class="dsh-enhance-title">连接<span class="dsh-enhance-badge">增强功能</span>'
     + '<div class="dsh-enhance-actions">'
     + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-enhance-switch" type="button" hidden>切换连接</button>'
-    + '<button class="dsh-enhance-button" id="dsh-enhance-save" type="button">保存并重连</button>'
+    + '<button class="dsh-enhance-button" id="dsh-enhance-save" type="button">保存并连接</button>'
     + '</div></div>'
     + '<p class="dsh-enhance-status" id="dsh-enhance-status">连接状态读取中…</p>'
     + '<div class="dsh-enhance-row">'
@@ -405,7 +411,9 @@ function injectEnhance(panel: Element): void {
   block.querySelector('#dsh-enhance-save')?.addEventListener('click', async () => {
     try {
       const result = await connection.saveServerUrl(urlEl.value.trim())
-      noteEl.textContent = result.saved ? '已保存，正在重连…' : ('保存失败：' + (result.error ?? '未知错误'))
+      noteEl.textContent = result.saved
+        ? (result.mode === 'smart' ? '正在连接（智能模式：该实例停止时自动回落）' : '已保存，正在连接…')
+        : ('保存失败：' + (result.error ?? '未知错误'))
     } catch (error) {
       noteEl.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error))
     }
@@ -422,29 +430,30 @@ function injectEnhance(panel: Element): void {
     }
   })
   void connection.getStatus().then((status) => {
-    const installedName = status.runtimeSource === 'installed'
-      ? '本机安装的 dsh'
-      : status.runtimeSource === 'npx' ? 'npx 缓存的 dsh' : undefined
-    const localLabel = installedName !== undefined
-      ? '本地 dsh web（' + installedName
-        + (status.installedDshVersion === undefined ? '' : ' v' + status.installedDshVersion) + '）'
-      : status.runtimeSource === 'bundled' ? '本地 dsh web（内置运行时）' : '本地 dsh web'
+    // Named by WHO started the runtime, then which dsh it is — "本地"/"内置"
+    // used to overlap, and a reused instance the user started got neither.
+    const version = status.installedDshVersion === undefined ? '' : ' v' + status.installedDshVersion
+    const startedByClient = status.runtimeSource === 'installed'
+      ? '客户端启动·本机安装的 dsh' + version
+      : status.runtimeSource === 'npx'
+        ? '客户端启动·npx 缓存的 dsh' + version
+        : status.runtimeSource === 'bundled' ? '客户端启动·内置运行时' : '客户端启动'
     const modeLabel = status.mode === 'probe'
-      ? '已连接本机正在运行的官方实例'
-      : status.mode === 'connect' ? '固定连接' : localLabel
+      ? '复用你已启动的 dsh'
+      : status.mode === 'connect' ? '固定地址' : startedByClient
     statusEl.textContent = modeLabel + ' → ' + (status.targetUrl || '（未就绪）')
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
     urlEl.value = status.savedServerUrl
-    switchEl.hidden = !status.canSwitch
-    switchEl.textContent = status.selectedMode === 'connect' ? '切换到本地' : '切换到远程'
+    switchEl.hidden = status.selectedMode !== 'connect'
+    switchEl.textContent = '切换到智能模式'
     // Nothing saved: offer a live official instance on the default port, so
     // switching to it is one click. Never overwrite a value already in the box.
     if (status.savedServerUrl !== '') return
     void connection.probeLocal().then((probe) => {
       if (probe.url === null || probe.url === status.targetUrl || urlEl.value !== '') return
       urlEl.value = probe.url
-      noteEl.textContent = '检测到本机正在运行的官方实例，地址已填入，点击「保存并重连」即可固定连接。'
+      noteEl.textContent = '检测到你已启动的 dsh。点击「保存并连接」即可使用；它停止时客户端会自动回落。'
     }).catch(() => { /* the offer is a convenience; its absence is not an error */ })
   }).catch(() => { statusEl.textContent = '连接状态不可用' })
   panel.appendChild(block)

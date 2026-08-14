@@ -112,11 +112,23 @@ The client serves two audiences, and both paths are first-class:
 | Mode | Best for | Behavior |
 |---|---|---|
 | **Smart** (default) | Most local users | Tries in order: the official instance on `127.0.0.1:3080` → a `dsh` on PATH → an npx-cached official package → the bundled runtime. |
-| **Connect** | Remote machines, containers, or a manually managed runtime | Connects to the Web UI address you provide and does not start a local runtime. |
+| **Pinned address** | Another machine, a container, or a manually managed runtime | Connects to the Web UI address you provide and starts no runtime of its own. |
 
 In Smart mode, an official Web UI already running in your terminal is reused as-is — the developer path: sessions stay shared with the desktop window while the Agent runs inside your own complete shell environment.
 
-After you save a valid remote address, connection settings show a **Switch to local / Switch to remote** shortcut. Switching locally enters Smart mode but keeps the remote address for one-click return; use **Save and reconnect** only when editing the address.
+Enter an address and choose **Save and connect** to store and use it immediately. While a pinned address is active, **Switch to Smart mode** is shown as a separate escape; the address remains saved, so **Save and connect** can use it again later.
+
+Connection status is described by **who started the runtime**, so "local" and "bundled" no longer overlap:
+
+| Status | Meaning |
+|---|---|
+| Reusing the dsh you started | An instance you ran yourself (`127.0.0.1:3080` by default) |
+| Client-started · bundled runtime | A background child using the runtime shipped in the installer |
+| Client-started · npx-cached dsh | A background child using the official package npx already cached |
+| Client-started · installed dsh | A background child using the `dsh` you installed on PATH |
+| Pinned address | A direct connection; the client starts no runtime |
+
+> Choosing **Save and connect** for `127.0.0.1:3080` — the default probe address — keeps the client in Smart mode. Smart already prefers that instance and can still fall back automatically when it stops.
 
 Leave the Web UI address empty to return to Smart mode. Connection settings can be changed from the enhanced block in General Settings or from **Web UI Connection…** in the application menu.
 
@@ -155,10 +167,10 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 
 On the bundled runtime the Agent's capabilities match official `dsh` — same runtime, same `~/.dsh`, same OS-level sandboxing. The execution environment is aligned with "running dsh in your own terminal" as follows:
 
-- **`node` is always available.** Packaged builds publish Electron's own Node under the name `node` in `~/.dsh-desktop/bin` and **append** that directory to the runtime's `PATH`. A user who never installed Node still gets an Agent that can run `node script.js`; a user who did keeps their own version first. The directory provides no `npm`/`npx` — for those (starting an MCP server with `npx`, say) install Node.js or use Connect mode. The shim works by setting `ELECTRON_RUN_AS_NODE` so Electron runs as Node, so **processes started through it, and their own children,** carry that variable: a node script that goes on to launch an Electron-based tool must clear it, or use a real Node.js install.
+- **`node` is always available.** Packaged builds publish Electron's own Node under the name `node` in `~/.dsh-desktop/bin` and **append** that directory to the runtime's `PATH`. A user who never installed Node still gets an Agent that can run `node script.js`; a user who did keeps their own version first. The directory provides no `npm`/`npx` — for those (starting an MCP server with `npx`, say) install Node.js or use Pinned address mode. The shim works by setting `ELECTRON_RUN_AS_NODE` so Electron runs as Node, so **processes started through it, and their own children,** carry that variable: a node script that goes on to launch an Electron-based tool must clear it, or use a real Node.js install.
 - **The Agent's environment stays clean.** The bundled runtime relies on `ELECTRON_RUN_AS_NODE` to run on Electron's Node, which is an implementation detail of how it is launched. The client removes that variable once the runtime starts and re-attaches it only where the runtime itself respawns Node (the native folder picker, the Windows ACL sandbox runner), so the Agent's own commands never inherit it — otherwise every Electron-based tool the Agent runs (`code`, for instance) would fail.
 - **File permissions.** The app does not enable the App Sandbox, so the Agent's file access is that of an ordinary user process. On macOS the first access to Desktop, Documents, or Downloads is prompted in this app's name, and grants are recorded per application — permissions already given to your terminal do not carry over. The system prompt states the purpose.
-- **Pinned version.** The bundled runtime ships with the installer and cannot be upgraded on its own. Use Connect mode to track the latest official release.
+- **Pinned version.** The bundled runtime ships with the installer and cannot be upgraded on its own. Use Pinned address mode with a runtime you maintain to track the latest official release.
 
 ## Development
 
@@ -203,7 +215,7 @@ After every platform succeeds, the workflow generates SHA-256 checksums and `lat
 
 ## Project status
 
-The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, in-app updates, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
+The desktop shell, Smart/Pinned address modes, shared `DSH_HOME`, tray behavior, runtime supervision, in-app updates, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
 
 Contributions and issue reports are welcome, especially around Windows behavior, remote connections, and packaging.
 

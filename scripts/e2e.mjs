@@ -43,7 +43,7 @@ const app = await electron.launch({ args: [join(APP_DIR, '.build', 'main.mjs')],
 const window = await app.firstWindow()
 window.on('console', msg => console.log('[renderer:' + msg.type() + '] ' + msg.text().slice(0, 300)))
 window.on('pageerror', err => console.log('[pageerror] ' + err.message.slice(0, 500)))
-await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
+await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, null, { timeout: 60000 })
 await window.waitForTimeout(3000)
 await shot(window, '10-booted')
 

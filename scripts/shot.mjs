@@ -29,7 +29,7 @@ const app = await electron.launch({ args: [join(APP_DIR, '.build', 'main.mjs')],
 const window = await app.firstWindow()
 // The local dsh web child boots first; the official Web UI appears in the
 // window once the carrier reaches it.
-await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60000 })
+await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, null, { timeout: 60000 })
 await window.waitForTimeout(3000)
 
 // A clean DSH_HOME opens the official first-run onboarding before the main
@@ -44,7 +44,7 @@ for (let step = 0; step < 8; step += 1) {
   await buttons.nth(count - 1).click()
   await window.waitForTimeout(500)
 }
-await window.waitForFunction(() => document.querySelector('[class*="onboardingOverlay"]') === null, { timeout: 30000 })
+await window.waitForFunction(() => document.querySelector('[class*="onboardingOverlay"]') === null, null, { timeout: 30000 })
 // Complete any subsequent notice/model flow before capturing the main UI.
 for (let step = 0; step < 8; step += 1) {
   const mask = window.locator('div[aria-hidden="true"][class*="_mask_"]').last()

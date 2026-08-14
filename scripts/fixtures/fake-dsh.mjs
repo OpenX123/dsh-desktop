@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * A stand-in for a user-installed `dsh`, for check-installed-runtime.mjs.
  *

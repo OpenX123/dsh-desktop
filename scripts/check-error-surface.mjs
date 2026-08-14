@@ -68,25 +68,30 @@ try {
   const facts = await window.locator('.fact').allInnerTexts()
   check('address and reason are shown', facts.length === 2, JSON.stringify(facts))
   const buttons = await window.locator('.actions button').allInnerTexts()
-  check('retry / settings / quit are offered', buttons.length === 3, JSON.stringify(buttons))
+  // Four seats here because this failure is a PINNED address: alongside retry,
+  // settings and quit, such a failure also offers the escape to Smart mode. A
+  // failure with nothing pinned has no Smart mode to fall back to and offers three.
+  check('retry / smart / settings / quit are offered', buttons.length === 4, JSON.stringify(buttons))
   // The buttons are in the document as soon as it parses, but their handlers
   // are assigned from the main process after loadURL settles. Asserting on
   // sight races that round trip — and an unbound button also makes the click
   // below do nothing. Wait for the binding rather than assume it has landed.
   const seats = () => [
     typeof document.getElementById('error-retry')?.onclick,
+    typeof document.getElementById('error-use-smart')?.onclick,
     typeof document.getElementById('error-settings')?.onclick,
     typeof document.getElementById('error-quit')?.onclick,
   ].join(',')
   const bound = await window.waitForFunction(
     () => [
       document.getElementById('error-retry')?.onclick,
+      document.getElementById('error-use-smart')?.onclick,
       document.getElementById('error-settings')?.onclick,
       document.getElementById('error-quit')?.onclick,
     ].every(handler => typeof handler === 'function'),
     { timeout: 10_000 },
-  ).then(() => 'function,function,function', () => window.evaluate(seats))
-  check('every seat is bound', bound === 'function,function,function', bound)
+  ).then(() => 'function,function,function,function', () => window.evaluate(seats))
+  check('every seat is bound', bound === 'function,function,function,function', bound)
 
   // The settings seat is the only way back when there is no page to carry the
   // official dialog's enhanced 连接 block.

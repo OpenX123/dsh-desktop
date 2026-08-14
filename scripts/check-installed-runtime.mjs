@@ -15,7 +15,7 @@
  */
 
 import { createServer } from 'node:http'
-import { chmodSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -122,6 +122,24 @@ async function launch(name, extraEnv = {}, { pathDsh = true } = {}) {
   })
 }
 
+/**
+ * Evaluate in the main window, tolerating a navigation in flight. Saving an
+ * address reconnects, so the context a call lands in can be torn down under it.
+ */
+async function evaluateStable(app, fn, arg, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let last
+  while (Date.now() < deadline) {
+    try {
+      return await app.windows()[0].evaluate(fn, arg)
+    } catch (error) {
+      last = error
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+  throw last ?? new Error('evaluate timed out')
+}
+
 /** Poll the desktop bridge until a status satisfies the predicate. */
 async function waitForStatus(app, predicate, timeoutMs = 45_000) {
   const deadline = Date.now() + timeoutMs
@@ -217,7 +235,55 @@ try {
   await app?.close().catch(() => {})
 }
 
-// 4. A live instance on the default port is offered to the connection surfaces.
+// 4. Saving the default probe address must NOT pin it, and a pinned address
+//    that stops answering must have a way back to a client-started runtime.
+try {
+  const probeUrl = 'http://127.0.0.1:59991'
+  const settingsFile = join(checkHome, 'pin', 'desktop', 'settings.json')
+  app = await launch('pin', { DSH_DESKTOP_SKIP_PROBE: '1', DSH_DESKTOP_PROBE_URL: probeUrl })
+  await app.firstWindow()
+  await waitForStatus(app, s => s.mode === 'local' && s.targetUrl !== '')
+
+  // The default probe address is what Smart mode already prefers; pinning it
+  // would only cost the fallback when that instance goes away.
+  const savedDefault = await evaluateStable(app,
+    url => window.desktop.connection.saveServerUrl(url), probeUrl)
+  check('saving the default probe address stays in Smart mode',
+    savedDefault.saved === true && savedDefault.mode === 'smart', JSON.stringify(savedDefault))
+  check('and Smart mode is what gets persisted',
+    JSON.parse(readFileSync(settingsFile, 'utf8')).connectionMode === 'smart',
+    readFileSync(settingsFile, 'utf8').replace(/\s+/g, ' '))
+
+  // Any other address is a deliberate pin and still behaves as one. The save
+  // above reconnected, so let the window settle before driving it again.
+  await waitForStatus(app, s => s.mode === 'local' && s.targetUrl !== '')
+  const dead = 'http://127.0.0.1:59992'
+  const savedOther = await evaluateStable(app,
+    url => window.desktop.connection.saveServerUrl(url), dead)
+  check('saving any other address still pins it',
+    savedOther.saved === true && savedOther.mode === 'connect', JSON.stringify(savedOther))
+  const pinned = await waitForStatus(app, s => s.selectedMode === 'connect')
+  check('the pinned address is the active selection', pinned.savedServerUrl === dead, pinned.savedServerUrl)
+
+  // That address answers nothing, so the failure surface owns the window — and
+  // must offer the way out rather than stranding the user there.
+  const offered = await app.windows()[0].waitForFunction(
+    () => document.getElementById('error-use-smart')?.textContent ?? null, null, { timeout: 30_000 })
+  // The surface follows the OS locale, so both spellings are correct here.
+  const label = await offered.jsonValue()
+  check('a pinned failure offers the escape to Smart mode',
+    label === '切换到智能模式' || label === 'Switch to Smart mode', label)
+  await evaluateStable(app, () => { window.desktop.local.useSmart() })
+  const recovered = await waitForStatus(app, s => s.mode === 'local' && s.targetUrl !== '', 60_000)
+  check('taking it recovers onto a client-started runtime',
+    recovered.runtimeSource === 'installed', recovered.runtimeSource)
+  check('and the address is kept for one-click return',
+    recovered.savedServerUrl === dead && recovered.canSwitch === true, recovered.savedServerUrl)
+} finally {
+  await app?.close().catch(() => {})
+}
+
+// 5. A live instance on the default port is offered to the connection surfaces.
 const probeServer = createServer((req, res) => {
   if (req.url === '/api/host.describe' && req.method === 'POST') {
     res.writeHead(200, { 'content-type': 'application/json' })

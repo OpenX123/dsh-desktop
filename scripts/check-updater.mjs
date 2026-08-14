@@ -206,7 +206,7 @@ const launchApp = async (home, extraEnv = {}) => {
     env: electronEnv,
   })
   const window = await launched.firstWindow()
-  await window.waitForFunction(() => document.title === 'Updater Fixture', { timeout: 15_000 })
+  await window.waitForFunction(() => document.title === 'Updater Fixture', null, { timeout: 15_000 })
   return { app: launched, window }
 }
 
