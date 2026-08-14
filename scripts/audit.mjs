@@ -94,7 +94,7 @@ const settingsErrors = []
 settingsPage.on('console', message => {
   if (message.type() === 'error') settingsErrors.push(message.text())
 })
-await settingsPage.waitForFunction(() => document.querySelector('#status')?.textContent !== '读取状态…')
+await settingsPage.waitForFunction(() => (document.querySelector('#versions')?.textContent ?? '').includes('桌面客户端 v'))
 const settingsUrl = new URL(settingsPage.url())
 check('private settings path', settingsUrl.pathname.length >= 49, settingsUrl.pathname)
 check('settings script executed', settingsErrors.length === 0, settingsErrors.join('; '))

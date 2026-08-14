@@ -164,13 +164,12 @@ function injectEnhance(panel: Element): void {
       '#' + ENHANCE_ID + ' .dsh-enhance-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:var(--dsw-alias-label-primary,#0F1115)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:var(--dsw-alias-label-primary,#0F1115);background:var(--dsw-alias-bg-module-platform,#EBEEF2);border-radius:999px;padding:2px 8px}',
       '#' + ENHANCE_ID + ' .dsh-enhance-status{margin:0 0 12px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-version{margin:0 0 12px;font-size:12px;color:var(--dsw-alias-label-tertiary,#8A9099)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-row{display:flex;gap:8px;align-items:center}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input{flex:1;min-width:0;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:8px;padding:6px 10px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);outline:none}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input:focus{border-color:var(--dsw-alias-brand-primary,#0F1115)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input::placeholder{color:var(--dsw-alias-label-dimmed,#9AA0A6)}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;margin-top:8px}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-button{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;margin-left:auto}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-button{white-space:nowrap;font-weight:400;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
       '#' + ENHANCE_ID + ' .dsh-enhance-button:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-button:disabled{cursor:default;opacity:.55}',
       '#' + ENHANCE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
@@ -179,10 +178,11 @@ function injectEnhance(panel: Element): void {
       '#' + UPDATE_ID + '{margin:0;padding:16px 0}',
       '#' + UPDATE_ID + ' .dsh-update-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:var(--dsw-alias-label-primary,#0F1115)}',
       '#' + UPDATE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:var(--dsw-alias-label-primary,#0F1115);background:var(--dsw-alias-bg-module-platform,#EBEEF2);border-radius:999px;padding:2px 8px}',
+      '#' + UPDATE_ID + ' .dsh-update-version{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-tertiary,#8A9099)}',
       '#' + UPDATE_ID + ' .dsh-update-status{margin:0 0 8px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
       '#' + UPDATE_ID + ' .dsh-update-notes{margin:0 0 10px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480);white-space:pre-wrap;max-height:120px;overflow:auto}',
-      '#' + UPDATE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
-      '#' + UPDATE_ID + ' .dsh-enhance-button{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
+      '#' + UPDATE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;margin-left:auto;flex-wrap:wrap}',
+      '#' + UPDATE_ID + ' .dsh-enhance-button{white-space:nowrap;font-weight:400;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
       '#' + UPDATE_ID + ' .dsh-enhance-button:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
       '#' + UPDATE_ID + ' .dsh-enhance-button:disabled{cursor:default;opacity:.55}',
       '#' + UPDATE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
@@ -194,19 +194,17 @@ function injectEnhance(panel: Element): void {
   const block = document.createElement('div')
   block.id = ENHANCE_ID
   block.innerHTML =
-    '<div class="dsh-enhance-title">连接<span class="dsh-enhance-badge">增强功能</span></div>'
-    + '<p class="dsh-enhance-status" id="dsh-enhance-status">连接状态读取中…</p>'
-    + '<p class="dsh-enhance-version" id="dsh-enhance-version"></p>'
-    + '<div class="dsh-enhance-row">'
-    + '<input class="dsh-enhance-input" id="dsh-enhance-url" spellcheck="false" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）">'
-    + '</div>'
+    '<div class="dsh-enhance-title">连接<span class="dsh-enhance-badge">增强功能</span>'
     + '<div class="dsh-enhance-actions">'
     + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-enhance-switch" type="button" hidden>切换连接</button>'
     + '<button class="dsh-enhance-button" id="dsh-enhance-save" type="button">保存并重连</button>'
+    + '</div></div>'
+    + '<p class="dsh-enhance-status" id="dsh-enhance-status">连接状态读取中…</p>'
+    + '<div class="dsh-enhance-row">'
+    + '<input class="dsh-enhance-input" id="dsh-enhance-url" spellcheck="false" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）">'
     + '</div>'
     + '<p class="dsh-enhance-note" id="dsh-enhance-note"></p>'
   const statusEl = block.querySelector('#dsh-enhance-status') as HTMLElement
-  const versionEl = block.querySelector('#dsh-enhance-version') as HTMLElement
   const urlEl = block.querySelector('#dsh-enhance-url') as HTMLInputElement
   const noteEl = block.querySelector('#dsh-enhance-note') as HTMLElement
   const switchEl = block.querySelector('#dsh-enhance-switch') as HTMLButtonElement
@@ -236,7 +234,6 @@ function injectEnhance(panel: Element): void {
     statusEl.textContent = modeLabel + ' → ' + (status.targetUrl || '（未就绪）')
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
-    versionEl.textContent = '桌面客户端 v' + status.desktopVersion + ' · 内置 dsh ' + (status.dshVersion ?? '不可用')
     urlEl.value = status.savedServerUrl
     switchEl.hidden = !status.canSwitch
     switchEl.textContent = status.selectedMode === 'connect' ? '切换到本地' : '切换到远程'
@@ -257,6 +254,9 @@ function updateCopy(english: boolean): {
   installing: string
   restart: string
   unavailable: string
+  client: string
+  bundled: string
+  dshUnavailable: string
 } {
   if (english) {
     return {
@@ -272,6 +272,9 @@ function updateCopy(english: boolean): {
       installing: 'Starting the installer…',
       restart: 'Install the new copy, then reopen the app',
       unavailable: 'Update status unavailable',
+      client: 'Desktop client v',
+      bundled: 'bundled dsh',
+      dshUnavailable: 'unavailable',
     }
   }
   return {
@@ -287,6 +290,9 @@ function updateCopy(english: boolean): {
     installing: '正在启动安装程序…',
     restart: '请安装新版本后重新打开应用',
     unavailable: '更新状态不可用',
+    client: '桌面客户端 v',
+    bundled: '内置 dsh',
+    dshUnavailable: '不可用',
   }
 }
 
@@ -294,12 +300,13 @@ function paintUpdateCard(state: UpdateState, english: boolean): void {
   const block = document.getElementById(UPDATE_ID)
   if (block === null) return
   const copy = updateCopy(english)
+  const versionEl = block.querySelector('#dsh-update-version') as HTMLElement | null
   const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
   const notesEl = block.querySelector('#dsh-update-notes') as HTMLElement | null
   const checkEl = block.querySelector('#dsh-update-check') as HTMLButtonElement | null
   const installEl = block.querySelector('#dsh-update-install') as HTMLButtonElement | null
   const dismissEl = block.querySelector('#dsh-update-dismiss') as HTMLButtonElement | null
-  if (statusEl === null || notesEl === null || checkEl === null || installEl === null || dismissEl === null) return
+  if (versionEl === null || statusEl === null || notesEl === null || checkEl === null || installEl === null || dismissEl === null) return
 
   const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'installing'
   checkEl.disabled = busy
@@ -309,17 +316,21 @@ function paintUpdateCard(state: UpdateState, english: boolean): void {
   dismissEl.hidden = !showInstall || state.dismissed
   installEl.disabled = busy
 
-  let line = 'v' + state.currentVersion
-  if (state.phase === 'checking') line += ' · ' + copy.checking
-  else if (state.phase === 'upToDate') line += ' · ' + copy.upToDate
-  else if (state.phase === 'available' && state.info !== null) line += ' · ' + copy.found + ' v' + state.info.availableVersion
+  const dsh = block.dataset.dshVersion || copy.dshUnavailable
+  versionEl.textContent = copy.client + state.currentVersion + ' · ' + copy.bundled + ' ' + dsh
+
+  let line = ''
+  if (state.phase === 'checking') line = copy.checking
+  else if (state.phase === 'upToDate') line = copy.upToDate
+  else if (state.phase === 'available' && state.info !== null) line = copy.found + ' v' + state.info.availableVersion
   else if (state.phase === 'downloading') {
     const percent = state.progress?.percent
-    line += ' · ' + copy.downloading + (typeof percent === 'number' && percent > 0 ? ' ' + String(percent) + '%' : '…')
-  } else if (state.phase === 'installing') line += ' · ' + copy.installing
-  else if (state.phase === 'restartRequired') line += ' · ' + copy.restart
-  else if (state.phase === 'error') line += ' · ' + (state.error ?? copy.unavailable)
+    line = copy.downloading + (typeof percent === 'number' && percent > 0 ? ' ' + String(percent) + '%' : '…')
+  } else if (state.phase === 'installing') line = copy.installing
+  else if (state.phase === 'restartRequired') line = copy.restart
+  else if (state.phase === 'error') line = state.error ?? copy.unavailable
   statusEl.textContent = line
+  statusEl.hidden = line === ''
   notesEl.textContent = state.info?.notes ?? ''
   notesEl.hidden = (state.info?.notes ?? '') === ''
 }
@@ -330,14 +341,15 @@ function injectUpdate(panel: Element, english: boolean): void {
   const block = document.createElement('div')
   block.id = UPDATE_ID
   block.innerHTML =
-    '<div class="dsh-update-title">' + copy.title + '<span class="dsh-enhance-badge">' + copy.badge + '</span></div>'
-    + '<p class="dsh-update-status" id="dsh-update-status"></p>'
-    + '<p class="dsh-update-notes" id="dsh-update-notes" hidden></p>'
+    '<div class="dsh-update-title">' + copy.title + '<span class="dsh-enhance-badge">' + copy.badge + '</span>'
     + '<div class="dsh-enhance-actions">'
     + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-update-install" type="button" hidden>' + copy.install + '</button>'
     + '<button class="dsh-enhance-button" id="dsh-update-check" type="button">' + copy.check + '</button>'
     + '<button class="dsh-enhance-button" id="dsh-update-dismiss" type="button" hidden>' + copy.dismiss + '</button>'
-    + '</div>'
+    + '</div></div>'
+    + '<p class="dsh-update-version" id="dsh-update-version"></p>'
+    + '<p class="dsh-update-status" id="dsh-update-status" hidden></p>'
+    + '<p class="dsh-update-notes" id="dsh-update-notes" hidden></p>'
   block.querySelector('#dsh-update-check')?.addEventListener('click', () => {
     void update.check()
       .then(() => update.getStatus())
@@ -351,9 +363,19 @@ function injectUpdate(panel: Element, english: boolean): void {
     void update.dismiss().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})
   })
   panel.appendChild(block)
-  void update.getStatus().then((state) => { paintUpdateCard(state, english) }).catch(() => {
+  void Promise.allSettled([update.getStatus(), connection.getStatus()]).then((results) => {
+    const state = results[0].status === 'fulfilled' ? results[0].value : null
+    const conn = results[1].status === 'fulfilled' ? results[1].value : null
+    if (conn !== null) block.dataset.dshVersion = conn.dshVersion ?? ''
+    if (state !== null) {
+      paintUpdateCard(state, english)
+      return
+    }
     const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
-    if (statusEl !== null) statusEl.textContent = copy.unavailable
+    if (statusEl !== null) {
+      statusEl.hidden = false
+      statusEl.textContent = copy.unavailable
+    }
   })
 }
 

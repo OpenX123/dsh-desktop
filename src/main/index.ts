@@ -24,7 +24,7 @@ import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, shell, Tray } from 'electron'
 import {
   AUTO_CHECK_DELAY_MS,
   DesktopUpdater,
@@ -782,12 +782,12 @@ function openSettingsWindow(): void {
   }
   settingsWindow = new BrowserWindow({
     width: 480,
-    height: 520,
-    title: 'Web UI 连接',
+    height: 660,
+    title: '连接设置',
     resizable: true,
     minimizable: false,
     maximizable: false,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#17181a' : '#FFFFFF',
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -1122,15 +1122,15 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + '$("update-check").disabled=busy;$("update-install").disabled=busy;'
   + 'const has=u.phase==="available"&&u.info;$("update-install").hidden=!has||busy||u.phase==="installing";'
   + '$("update-dismiss").hidden=!has||u.dismissed||busy;'
-  + 'let line="当前版本 v"+u.currentVersion;'
-  + 'if(u.phase==="checking")line+=" · 正在检查…";'
-  + 'else if(u.phase==="upToDate")line+=" · 已是最新版本";'
-  + 'else if(u.phase==="available"&&u.info)line+=" · 发现 v"+u.info.availableVersion;'
-  + 'else if(u.phase==="downloading")line+=" · 下载中 "+((u.progress&&u.progress.percent)||0)+"%";'
-  + 'else if(u.phase==="installing")line+=" · 正在启动安装程序";'
-  + 'else if(u.phase==="restartRequired")line+=" · 请安装后重新打开";'
-  + 'else if(u.phase==="error")line+=" · "+(u.error||"更新失败");'
-  + '$("update-status").textContent=line;'
+  + 'let line="";'
+  + 'if(u.phase==="checking")line="正在检查…";'
+  + 'else if(u.phase==="upToDate")line="已是最新版本";'
+  + 'else if(u.phase==="available"&&u.info)line="发现 v"+u.info.availableVersion;'
+  + 'else if(u.phase==="downloading")line="下载中 "+((u.progress&&u.progress.percent)||0)+"%";'
+  + 'else if(u.phase==="installing")line="正在启动安装程序";'
+  + 'else if(u.phase==="restartRequired")line="请安装后重新打开";'
+  + 'else if(u.phase==="error")line=u.error||"更新失败";'
+  + '$("update-status").textContent=line;$("update-status").hidden=!line;'
   + '$("update-notes").textContent=(u.info&&u.info.notes)||"";}'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
   + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
@@ -1148,37 +1148,96 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + '$("note").textContent=j.switched?"正在切换…":("切换失败："+(j.error||"未知错误"));if(!j.switched)$("switch").disabled=false;'
   + 'if(j.switched)setTimeout(()=>window.close(),500);'
   + '}catch(e){$("note").textContent="切换失败："+e.message;$("switch").disabled=false}};'
-  + '$("update-check").onclick=async()=>{try{$("update-check").disabled=true;const r=await fetch("desktop/update/check",{method:"POST"});renderUpdate((await r.json()).state)}catch(e){$("update-status").textContent="检查失败："+e.message}};'
-  + '$("update-install").onclick=async()=>{try{$("update-install").disabled=true;const r=await fetch("desktop/update/install",{method:"POST"});const j=await r.json();if(j.state)renderUpdate(j.state);if(!j.started)$("update-status").textContent="安装失败："+(j.error||"未知错误")}catch(e){$("update-status").textContent="安装失败："+e.message}};'
+  + '$("update-check").onclick=async()=>{try{$("update-check").disabled=true;const r=await fetch("desktop/update/check",{method:"POST"});renderUpdate((await r.json()).state)}catch(e){$("update-status").hidden=false;$("update-status").textContent="检查失败："+e.message}};'
+  + '$("update-install").onclick=async()=>{try{$("update-install").disabled=true;const r=await fetch("desktop/update/install",{method:"POST"});const j=await r.json();if(j.state)renderUpdate(j.state);if(!j.started){$("update-status").hidden=false;$("update-status").textContent="安装失败："+(j.error||"未知错误")}}catch(e){$("update-status").hidden=false;$("update-status").textContent="安装失败："+e.message}};'
   + '$("update-dismiss").onclick=async()=>{await fetch("desktop/update/dismiss",{method:"POST"});renderUpdate(await(await fetch("desktop/update")).json())};'
-  + '$("close").onclick=()=>window.close();refresh();'
+  + 'refresh();'
   + 'setInterval(async()=>{try{const u=await(await fetch("desktop/update")).json();if(u.phase==="downloading"||u.phase==="installing")renderUpdate(u)}catch(e){}},400);'
 
-/** The connection-settings page (self-contained except for its same-origin script). */
+/** The connection-settings page, styled to match the loading page aesthetic. */
 function settingsPageHtml(): string {
+  const icon = loadingIconTag()
   return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-    + '<title>Web UI 连接</title>'
-    + '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; style-src \'unsafe-inline\'">'
-    + '<style>body{font:14px -apple-system,"PingFang SC",sans-serif;margin:24px;color:#242424}'
-    + 'h1{font-size:16px;margin:0 0 12px}p{color:#666;margin:8px 0}label{display:block;margin:10px 0 4px;font-size:13px;color:#666}'
-    + 'input{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #d8d8d4;border-radius:8px;font:inherit}'
-    + 'button{margin-top:14px;padding:7px 14px;border:1px solid #d8d8d4;border-radius:8px;background:#fff;font:inherit;cursor:pointer}'
-    + 'button.primary{background:#1c1c1c;color:#fff;border-color:#1c1c1c;margin-right:8px}'
-    + 'hr{border:none;border-top:1px solid #ecece8;margin:20px 0 16px}'
-    + 'h2{font-size:14px;margin:0 0 8px}#update-notes{white-space:pre-wrap;max-height:90px;overflow:auto}</style></head><body>'
-    + '<h1>Web UI 连接</h1>'
-    + '<p id="status">读取状态…</p>'
-    + '<p id="versions"></p>'
-    + '<label for="url">Web UI 地址（留空 = 本地启动 dsh）</label>'
-    + '<input id="url" placeholder="http://127.0.0.1:3080" spellcheck="false">'
-    + '<div><button id="switch" class="primary" hidden>切换连接</button><button id="save">保存并重连</button><button id="close">关闭</button></div>'
-    + '<p id="note"></p>'
-    + '<hr><h2>应用更新</h2><p id="update-status">读取更新状态…</p>'
-    + '<div><button id="update-check">检查更新</button>'
+    + '<title>连接设置</title>'
+    + '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; img-src data:; style-src \'unsafe-inline\'">'
+    + '<meta name="color-scheme" content="light dark">'
+    + '<style>:root{color-scheme:light dark}'
+    + '*{box-sizing:border-box;margin:0;padding:0}'
+    + 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6;background:#fff;color:#0f1115;min-height:100vh;display:flex;justify-content:center;padding:48px 24px 40px}'
+    + '.container{width:100%;max-width:400px}'
+    // Header: centered logo + title, matching loading page
+    + '.header{text-align:center;margin-bottom:36px}'
+    + '.mark{width:56px;height:56px;border-radius:14px;box-shadow:0 12px 32px rgba(15,17,21,.14)}'
+    + '.page-title{margin:18px 0 0;font-size:18px;font-weight:600;letter-spacing:-.01em}'
+    // Section titles with badge
+    + '.section{margin-bottom:24px}'
+    + '.section-title{display:flex;align-items:center;gap:8px;margin:0 0 6px;font-size:14px;font-weight:500}'
+    + '.section-title .actions{margin-left:auto;margin-top:0}'
+    + '.badge{font-size:11px;font-weight:400;background:#EBEEF2;border-radius:999px;padding:2px 8px;color:#6e7480}'
+    // Text hierarchy
+    + '.status-text{margin:0 0 12px;font-size:13px;color:#6e7480}'
+    + '.version-text{margin:0 0 4px;font-size:12px;color:#9aa0a6}'
+    // Input
+    + 'input{width:100%;background:#fff;border:1px solid #d8d8d4;border-radius:8px;padding:7px 11px;font-size:13px;font-family:inherit;color:#0f1115;outline:none;transition:border-color .15s ease}'
+    + 'input:focus{border-color:#0f1115}'
+    + 'input::placeholder{color:#9aa0a6}'
+    // Action buttons
+    + '.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}'
+    + 'button{white-space:nowrap;font-weight:400;background:transparent;border:1px solid #d8d8d4;border-radius:28px;padding:6px 18px;font-size:13px;font-family:inherit;color:#0f1115;cursor:pointer;transition:background .15s ease,opacity .15s ease}'
+    + 'button:hover{background:#f5f6f7}'
+    + 'button:disabled{cursor:default;opacity:.5}'
+    + 'button.primary{background:#0f1115;border-color:#0f1115;color:#fff}'
+    + 'button.primary:hover{opacity:.88;background:#0f1115}'
+    + '[hidden]{display:none}'
+    + '.note{margin:8px 0 0;font-size:13px;color:#6e7480}'
+    // Divider
+    + '.divider{border:none;border-top:1px solid #ebeef2;margin:28px 0}'
+    // Update notes
+    + '#update-notes{white-space:pre-wrap;max-height:120px;overflow:auto;margin:0 0 10px;font-size:13px;color:#6e7480}'
+    + '#update-notes:empty{display:none}'
+    // Dark mode
+    + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}'
+    + '.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}'
+    + '.badge{background:#2c2e33;color:#818791}'
+    + '.status-text{color:#aeb3bb}.version-text{color:#818791}'
+    + 'input{background:#1e1f22;border-color:#3a3d42;color:#f4f5f6}'
+    + 'input:focus{border-color:#f4f5f6}input::placeholder{color:#5a5e66}'
+    + 'button{border-color:#3a3d42;color:#f4f5f6}button:hover{background:#232529}'
+    + 'button.primary{background:#f4f5f6;border-color:#f4f5f6;color:#17181a}'
+    + 'button.primary:hover{opacity:.88;background:#f4f5f6}'
+    + '.note{color:#aeb3bb}.divider{border-color:#2c2e33}'
+    + '#update-notes{color:#aeb3bb}}'
+    // Reduced motion
+    + '@media(prefers-reduced-motion:reduce){*{transition:none!important}}'
+    + '</style></head><body><div class="container">'
+    // Header with logo
+    + '<div class="header">' + icon + '<h1 class="page-title">连接设置</h1></div>'
+    // Connection section
+    + '<div class="section">'
+    + '<div class="section-title">连接<span class="badge">增强功能</span>'
+    + '<div class="actions">'
+    + '<button id="switch" class="primary" hidden>切换连接</button>'
+    + '<button id="save">保存并重连</button>'
+    + '</div></div>'
+    + '<p class="status-text" id="status">连接状态读取中…</p>'
+    + '<input id="url" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）" spellcheck="false">'
+    + '<p class="note" id="note"></p>'
+    + '</div>'
+    // Divider
+    + '<hr class="divider">'
+    // Update section
+    + '<div class="section">'
+    + '<div class="section-title">应用更新<span class="badge">增强功能</span>'
+    + '<div class="actions">'
     + '<button id="update-install" class="primary" hidden>下载并安装</button>'
-    + '<button id="update-dismiss" hidden>稍后提醒</button></div>'
+    + '<button id="update-check">检查更新</button>'
+    + '<button id="update-dismiss" hidden>稍后提醒</button>'
+    + '</div></div>'
+    + '<p class="version-text" id="versions"></p>'
+    + '<p class="status-text" id="update-status" hidden></p>'
     + '<p id="update-notes"></p>'
-    + '<script src="desktop/settings.js"></script></body></html>'
+    + '</div>'
+    + '</div><script src="desktop/settings.js"></script></body></html>'
 }
 
 /** Connect to a fixed Web UI origin: stop any local child, point the window at it. */
