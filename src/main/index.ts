@@ -6,7 +6,8 @@
  * origin) and loads the **official Web UI** itself in the client window — the
  * interface, session titles/renaming, and every button interaction are the
  * official product's, by construction. The client's own surface is limited to
- * a small connection-settings window (menu → "Web UI 连接…") served by a
+ * the "连接" block appended to the official settings dialog, plus the small
+ * native connection window it (and the loading surface) opens, served by a
  * minimal loopback server. Nothing here imports a harness package.
  *
  * Path expressions resolve at runtime from the BUILT bundle
@@ -593,6 +594,9 @@ function loadingPageUrl(): string {
   const title = chinese ? '正在启动 DeepSeek Harness' : 'Starting DeepSeek Harness'
   const detail = chinese ? '正在准备本地服务…' : 'Preparing the local service…'
   const hint = chinese ? '首次启动可能需要几秒钟' : 'The first launch may take a few seconds'
+  // The only connection seat reachable while the Web UI itself cannot load:
+  // the official settings dialog (and its enhanced 连接 block) needs a page.
+  const action = chinese ? 'Web UI 连接…' : 'Web UI connection…'
   const html = '<!doctype html><html lang="' + (chinese ? 'zh-CN' : 'en') + '"><head><meta charset="utf-8">'
     + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'">'
     + '<meta name="color-scheme" content="light dark"><title>' + title + '</title><style>'
@@ -603,22 +607,30 @@ function loadingPageUrl(): string {
     + '#loading-status{margin:0;color:#6e7480;font-size:14px;line-height:22px}.hint{margin:8px 0 0;color:#9aa0a6;font-size:12px;line-height:18px}'
     + '.activity{height:20px;margin:20px auto 0;display:flex;justify-content:center;align-items:center;gap:6px}'
     // An author rule beats the UA stylesheet, so [hidden] needs restating here.
-    + '.activity[hidden],.hint[hidden]{display:none}'
+    + '.activity[hidden],.hint[hidden],.action[hidden]{display:none}'
+    + '.action{margin:20px auto 0;display:block;font:inherit;font-size:13px;color:#0f1115;background:transparent;'
+    + 'border:1px solid #d8d8d4;border-radius:28px;padding:7px 18px;cursor:pointer}'
+    + '.action:hover{background:#f5f6f7}'
     + '.activity i{display:block;width:5px;height:5px;border-radius:50%;background:#0f1115;animation:pulse 1.2s ease-in-out infinite}'
     + '.activity i:nth-child(2){animation-delay:.16s}.activity i:nth-child(3){animation-delay:.32s}'
     + '@keyframes pulse{0%,70%,100%{opacity:.18;transform:translateY(0)}35%{opacity:1;transform:translateY(-3px)}}'
-    + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}#loading-status{color:#aeb3bb}.hint{color:#818791}.activity i{background:#f4f5f6}}'
+    + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}#loading-status{color:#aeb3bb}.hint{color:#818791}.activity i{background:#f4f5f6}'
+    + '.action{color:#f4f5f6;border-color:#3a3d42}.action:hover{background:#232529}}'
     + '@media(prefers-reduced-motion:reduce){.activity i{animation:none}.activity i:nth-child(2){opacity:.5}.activity i:nth-child(3){opacity:.8}}'
     + '</style></head><body><main>' + loadingIconTag()
     + '<h1>' + title + '</h1><p id="loading-status">' + detail + '</p><p class="hint">' + hint + '</p>'
-    + '<div class="activity" aria-hidden="true"><i></i><i></i><i></i></div></main></body></html>'
+    + '<div class="activity" aria-hidden="true"><i></i><i></i><i></i></div>'
+    + '<button class="action" id="loading-action" type="button" hidden>' + action + '</button>'
+    + '</main></body></html>'
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
 /**
  * Update the loading document's status line. The 'failed' state also withdraws
  * the activity indicator and the "may take a few seconds" hint: a launch that
- * cannot proceed must not keep animating, nor keep promising progress.
+ * cannot proceed must not keep animating, nor keep promising progress. It
+ * reveals the connection button instead — with no page, the official settings
+ * dialog (which now owns the connection form) cannot be reached.
  */
 function updateLoadingStatus(chinese: string, english: string, state: 'busy' | 'failed' = 'busy'): void {
   const window = mainWindow
@@ -631,7 +643,12 @@ function updateLoadingStatus(chinese: string, english: string, state: 'busy' | '
   void window.webContents.executeJavaScript(
     `document.getElementById('loading-status')?.replaceChildren(${JSON.stringify(message)});`
     + `document.querySelector('.activity')?.toggleAttribute('hidden', ${failed});`
-    + `document.querySelector('.hint')?.toggleAttribute('hidden', ${failed});`,
+    + `document.querySelector('.hint')?.toggleAttribute('hidden', ${failed});`
+    // The page's own CSP forbids inline script, so the click seat is bound
+    // from here. onclick (not addEventListener) keeps repeat calls idempotent.
+    + `(() => { const b = document.getElementById('loading-action'); if (b === null) return;`
+    + ` b.hidden = !${failed};`
+    + ` b.onclick = () => { window.desktop?.openConnectionSettings?.() } })();`,
     true,
   ).catch(() => {})
 }
@@ -1023,25 +1040,29 @@ function launchWindow(generation = connectionGeneration): void {
     // (dock activate, second instance) rejects without one, so the loading
     // surface must carry the state instead of spinning forever.
     if (generation !== connectionGeneration || quitting) return
-    updateLoadingStatus('本地服务启动失败。请从菜单打开「Web UI 连接…」。',
-      'The local service failed to start. Open “Web UI connection…” from the menu.', 'failed')
+    updateLoadingStatus('本地服务启动失败。可在下方设置 Web UI 连接。',
+      'The local service failed to start. Set the Web UI connection below.', 'failed')
   })
 }
 
-/** The application menu: standard roles plus the connection-settings seat. */
+/**
+ * The application menu. Connection settings live in the official settings
+ * dialog's enhanced "连接" block now, so the menu carries standard roles only.
+ * macOS keeps it: the system draws that menu bar outside the window, and its
+ * roles carry the standard edit accelerators. Windows/Linux would paint the
+ * bar inside the frame above the Web UI's own chrome, so the menu is dropped
+ * there entirely — Chromium keeps the editing accelerators on its own.
+ */
 function installMenu(): void {
-  const isMac = process.platform === 'darwin'
-  const connectionItem: Electron.MenuItemConstructorOptions = {
-    label: 'Web UI 连接…',
-    click: () => { openSettingsWindow() },
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
   }
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...isMac ? [{
+    {
       label: app.name,
       submenu: [
         { role: 'about' as const },
-        { type: 'separator' as const },
-        connectionItem,
         { type: 'separator' as const },
         { role: 'hide' as const },
         { role: 'hideOthers' as const },
@@ -1049,10 +1070,7 @@ function installMenu(): void {
         { type: 'separator' as const },
         { role: 'quit' as const },
       ],
-    }] : [{
-      label: '文件',
-      submenu: [connectionItem, { type: 'separator' as const }, { role: 'quit' as const }],
-    }],
+    },
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
@@ -1138,8 +1156,8 @@ function startSettingsServer(): Promise<number> {
 
 function showLocalRuntimeStartupFailure(code: number | null, signal: NodeJS.Signals | null): void {
   const reason = webUi?.lastError
-  updateLoadingStatus('本地服务启动失败。请从菜单打开「Web UI 连接…」。',
-    'The local service failed to start. Open “Web UI connection…” from the menu.', 'failed')
+  updateLoadingStatus('本地服务启动失败。可在下方设置 Web UI 连接。',
+    'The local service failed to start. Set the Web UI connection below.', 'failed')
   const options = {
     type: 'error' as const,
     title: 'Harness',
