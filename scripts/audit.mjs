@@ -25,6 +25,9 @@ Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
 electronEnv.DSH_HOME = join(auditHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = join(auditHome, 'desktop')
 electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
+// Audit the runtime the release ships, not whichever dsh this developer
+// happens to have installed — the client prefers an installed one at runtime.
+electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
 
 const app = await electron.launch({
   args: [join(APP_DIR, '.build', 'main.mjs'), '--user-data-dir=' + join(auditHome, 'chromium')],

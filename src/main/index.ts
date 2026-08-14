@@ -16,9 +16,9 @@
  * @module dsh-desktop/main
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
@@ -33,6 +33,13 @@ import {
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
+import {
+  executableCandidates,
+  normalizePathEntry,
+  npxCacheRoot,
+  parseVersionOutput,
+  spawnTargetFor,
+} from './runtime-resolution.ts'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -272,6 +279,206 @@ function childPath(): string {
 }
 
 /**
+ * Locate an executable on the ambient PATH, the way a shell would. The client's
+ * own shim directory is excluded: it publishes Electron's Node under the name
+ * `node`, and a lookup that resolved to it would report the client's own
+ * runtime back as if the user had installed one.
+ */
+function findOnPath(name: string): string | undefined {
+  const shimDir = join(clientHome(), 'bin')
+  const candidates = executableCandidates(name, process.platform)
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    const dir = normalizePathEntry(entry)
+    if (dir === '' || !isAbsolute(dir) || dir === shimDir) continue
+    for (const candidate of candidates) {
+      const full = join(dir, candidate)
+      if (existsSync(full)) return full
+    }
+  }
+  return undefined
+}
+
+/**
+ * A dsh the user installed themselves (npm/pnpm global, a version manager, a
+ * source checkout on PATH). Preferred over the bundled runtime when present:
+ * it runs on a real system Node instead of Electron's Node mode, so none of
+ * the launcher's spawn rewriting or `--expose-internals` scaffolding applies,
+ * and the user's own `dsh` upgrades reach the desktop client without waiting
+ * for a client release. The bundled runtime stays the fallback.
+ */
+interface InstalledDsh {
+  /** Spawn shape, already resolved for this platform. */
+  command: string
+  args: string[]
+  shell: boolean
+  /** What identifies this runtime in logs and the status line. */
+  path: string
+  version: string
+  /** `installed` = a `dsh` on PATH; `npx` = a package npx already cached. */
+  source: 'installed' | 'npx'
+}
+
+let installedDsh: InstalledDsh | undefined
+/**
+ * Set when an installed runtime failed to reach readiness. The rest of the
+ * session uses the bundled runtime: retrying a runtime this client does not
+ * control, against the same failure, only spends the recovery budget.
+ */
+let installedDshRejected = false
+let installedDshDetection: Promise<void> | undefined
+
+/**
+ * Force-kill a child, without waiting. On Windows the direct child may be the
+ * cmd.exe wrapper around a `.cmd` shim, so the whole tree is terminated —
+ * killing the wrapper alone would leave the real process running. On POSIX
+ * this reaches the direct child only, which is all its callers spawn.
+ * SIGKILL rather than SIGTERM: this is the deadline path, and a shim that
+ * ignores SIGTERM would otherwise linger.
+ */
+function killProcessTree(child: ChildProcess): void {
+  const pid = child.pid
+  if (pid !== undefined && process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
+      .on('error', () => { child.kill('SIGKILL') })
+    return
+  }
+  child.kill('SIGKILL')
+}
+
+/**
+ * Read a `--version` line out of a candidate command. Success is the whole
+ * condition check: a `dsh` that prints its version has a working Node behind
+ * its shebang and a bootable CLI, which is strictly more than a separate
+ * `node --version` comparison would establish. Nothing is ever installed or
+ * downloaded here.
+ */
+async function readCommandVersion(command: string, shell: boolean, timeoutMs = 10_000): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    let settled = false
+    let stdout = ''
+    const finish = (value?: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    let child: ChildProcess
+    try {
+      child = spawn(command, ['--version'], {
+        cwd: homedir(),
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell,
+      })
+    } catch {
+      resolve(undefined)
+      return
+    }
+    const timer = setTimeout(() => { killProcessTree(child); finish() }, timeoutMs)
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+      if (stdout.length > 4_096) stdout = stdout.slice(0, 4_096)
+    })
+    child.once('error', () => { finish() })
+    child.once('exit', (code) => {
+      finish(code === 0 ? parseVersionOutput(stdout) : undefined)
+    })
+  })
+}
+
+/**
+ * Detect a user-installed dsh, once per session. Runs only on the path that is
+ * about to start a local runtime, so a client reusing an already-running
+ * instance never pays for it.
+ */
+/** A `dsh` the user installed onto PATH (npm/pnpm global, a version manager). */
+async function detectDshOnPath(): Promise<InstalledDsh | undefined> {
+  const found = findOnPath('dsh')
+  if (found === undefined) return undefined
+  const target = spawnTargetFor(found, process.platform)
+  const version = await readCommandVersion(target.command, target.shell)
+  if (version === undefined) {
+    console.warn('[desktop] a dsh on PATH did not report a version; ignoring it: ' + found)
+    return undefined
+  }
+  return { command: target.command, args: [], shell: target.shell, path: found, version, source: 'installed' }
+}
+
+/**
+ * A `@deepseek-ai/dsh` npx has already cached. This is the runtime the OFFICIAL
+ * instruction produces — `npx @deepseek-ai/dsh web` installs nothing onto PATH,
+ * so a PATH-only search misses every user who followed the documentation.
+ *
+ * Reading the cache directly (rather than re-invoking `npx`) keeps this
+ * offline and instant, reports the package's real version, and spawns the
+ * entry on the user's own Node with no wrapper process in between — which on
+ * Windows also avoids the cmd.exe layer a `.cmd` shim would add.
+ *
+ * Nothing is downloaded: an absent cache simply yields undefined.
+ */
+function detectDshInNpxCache(): InstalledDsh | undefined {
+  const root = npxCacheRoot(process.platform, process.env, homedir())
+  if (root === undefined || !existsSync(root)) return undefined
+  // The cached package is plain JavaScript, so it needs a real Node. The
+  // client's own shim is excluded by findOnPath: running this on Electron's
+  // Node would reintroduce the very Node-mode plumbing this path avoids.
+  const node = findOnPath('node')
+  if (node === undefined) return undefined
+  let best: { bin: string; version: string; mtimeMs: number } | undefined
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  for (const entry of entries) {
+    const packageDir = join(root, entry, 'node_modules', '@deepseek-ai', 'dsh')
+    try {
+      const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as {
+        name?: unknown
+        version?: unknown
+        bin?: unknown
+      }
+      // Identity is checked, not assumed: this walks a cache keyed by an
+      // arbitrary spec, and only the real package may be launched from it.
+      if (manifest.name !== '@deepseek-ai/dsh' || typeof manifest.version !== 'string') continue
+      const declared = typeof manifest.bin === 'string'
+        ? manifest.bin
+        : typeof manifest.bin === 'object' && manifest.bin !== null
+          ? (manifest.bin as Record<string, unknown>).dsh
+          : undefined
+      const bin = join(packageDir, typeof declared === 'string' ? declared : 'lib/bin.js')
+      if (!existsSync(bin)) continue
+      const mtimeMs = statSync(packageDir).mtimeMs
+      // Most recently touched wins. A repeated `npx @deepseek-ai/dsh` reuses
+      // one cache entry, so extra entries mean deliberately pinned specs — and
+      // the one the user ran last is the one they mean.
+      if (best === undefined || mtimeMs > best.mtimeMs) best = { bin, version: manifest.version, mtimeMs }
+    } catch {
+      continue
+    }
+  }
+  if (best === undefined) return undefined
+  return { command: node, args: [best.bin], shell: false, path: best.bin, version: best.version, source: 'npx' }
+}
+
+function detectInstalledDsh(): Promise<void> {
+  installedDshDetection ??= (async () => {
+    if (devFlag('DSH_DESKTOP_SKIP_INSTALLED_DSH')) return
+    // PATH first: an explicit installation outranks a cache entry npx may have
+    // written for a one-off pinned spec.
+    installedDsh = await detectDshOnPath() ?? detectDshInNpxCache()
+    if (installedDsh === undefined) {
+      console.log('[desktop] no user-installed dsh found; using the bundled runtime')
+      return
+    }
+    console.log('[desktop] user-installed dsh detected (' + installedDsh.source + '): '
+      + installedDsh.path + ' (v' + installedDsh.version + ')')
+  })()
+  return installedDshDetection
+}
+
+/**
  * macOS GUI applications inherit launchd's small PATH instead of the user's
  * login-shell PATH. The official runtime later derives Agent command
  * environments from this process, so Homebrew and version-manager tools would
@@ -381,8 +588,9 @@ function resolveBundledDsh(): DshCommand | undefined {
 
 /**
  * Resolve the `dsh` command the client spawns for local mode. Order: the
- * explicit DSH_DESKTOP_DSH override, the app-bundled npm package, conventional
- * sibling checkouts (dev convenience), and finally `dsh` on PATH.
+ * explicit DSH_DESKTOP_DSH override, a verified user-installed dsh, the
+ * app-bundled npm package, conventional sibling checkouts (dev convenience),
+ * and finally `dsh` on PATH.
  */
 interface DshCommand {
   command: string
@@ -390,8 +598,10 @@ interface DshCommand {
   /** The official CLI entry `runtimeLauncher()` imports, when args boot it. */
   entry?: string
   binPath?: string
+  /** Spawn through the platform shell (a Windows `.cmd`/`.bat` wrapper). */
+  shell?: boolean
   label: string
-  source: 'override' | 'bundled' | 'checkout' | 'path'
+  source: 'override' | 'installed' | 'npx' | 'bundled' | 'checkout' | 'path'
 }
 
 class BundledRuntimeMissingError extends Error {
@@ -405,6 +615,16 @@ function resolveDshCommand(): DshCommand {
   const explicit = devOverride('DSH_DESKTOP_DSH')
   if (explicit !== undefined && explicit.trim() !== '') {
     return { command: explicit, args: [], label: explicit, source: 'override' }
+  }
+  const installed = installedDshRejected ? undefined : installedDsh
+  if (installed !== undefined) {
+    return {
+      command: installed.command,
+      args: [...installed.args],
+      shell: installed.shell,
+      label: installed.path + ' (v' + installed.version + ')',
+      source: installed.source,
+    }
   }
   const bundled = resolveBundledDsh()
   if (bundled !== undefined) return bundled
@@ -469,6 +689,8 @@ class WebUiManager {
    */
   private fatalError: Error | undefined
   lastError: string | null = null
+  /** Which runtime the current generation was spawned from (status + fallback). */
+  lastSource: DshCommand['source'] | undefined
 
   constructor(
     private readonly onLog: (line: string) => void,
@@ -509,6 +731,7 @@ class WebUiManager {
       return
     }
     console.log('[desktop] dsh runtime: ' + dsh.source + ' (' + dsh.label + ')')
+    this.lastSource = dsh.source
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
       env: {
@@ -518,10 +741,14 @@ class WebUiManager {
         // The launcher imports this entry, then keeps the Node-mode variable
         // below out of everything the harness spawns afterwards.
         ...dsh.entry !== undefined && { DSH_DESKTOP_RUNTIME_ENTRY: dsh.entry },
-        // Inside a packaged app the child runs on Electron's bundled Node.
-        ...app.isPackaged && { ELECTRON_RUN_AS_NODE: '1' },
+        // Node mode belongs only to a child that IS the Electron binary. A
+        // user-installed dsh runs on a real system Node, where the variable
+        // would mean nothing to this process and everything to any Electron
+        // tool the Agent later starts underneath it.
+        ...app.isPackaged && dsh.command === process.execPath && { ELECTRON_RUN_AS_NODE: '1' },
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...dsh.shell === true && { shell: true },
     })
     let resolveReady: (url: string) => void = () => {}
     let rejectReady: (error: Error) => void = () => {}
@@ -598,13 +825,22 @@ class WebUiManager {
       if (process.platform === 'win32') {
         const pid = gen.child.pid
         if (pid === undefined) return
-        gen.child.kill()
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => { resolve() }, 3000)
+          const timer = setTimeout(() => {
+            // taskkill never reported the tree gone; take the direct child at
+            // least, so a wedged runtime cannot hold the client open.
+            gen.child.kill()
+            resolve()
+          }, 3000)
           gen.child.once('exit', () => { clearTimeout(timer); resolve() })
-          // Kill the tree (the harness spawns shell children that would
-          // otherwise outlive the direct child).
-          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {})
+          // Kill the tree BEFORE the direct child, never after. Signals cannot
+          // be caught on Windows, and every descendant — the harness's shell
+          // children, and the cmd.exe wrapper a user-installed `.cmd` shim is
+          // spawned through — is reachable only by walking down from a parent
+          // that is still alive. Terminating the parent first orphans the real
+          // server, which then keeps its port with nothing left to find it by.
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
+            .on('error', () => { gen.child.kill() })
         })
         return
       }
@@ -1529,7 +1765,21 @@ function getStatusJson(includeLocalDetail = true): Record<string, unknown> {
     canSwitch: savedServerUrl !== undefined,
     ...includeLocalDetail && webUi?.pid() !== undefined && { childPid: webUi.pid() },
     ...includeLocalDetail && webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
+    // Which dsh the local child came from. Names a path on this machine, so it
+    // travels under the same rule as the pid and the runtime error.
+    ...includeLocalDetail && webUi?.lastSource !== undefined && { runtimeSource: webUi.lastSource },
+    ...includeLocalDetail && installedDsh !== undefined && !installedDshRejected
+      && { installedDshVersion: installedDsh.version },
   }
+}
+
+/**
+ * Whether an official Web UI is answering on the default port right now. The
+ * connection surfaces offer the result as a ready-made address, so switching
+ * to an instance the user just started is one click instead of typing it.
+ */
+async function probeDefaultWebUi(): Promise<{ url: string | null }> {
+  return { url: await probeWebUi(defaultWebProbeUrl()) ?? null }
 }
 
 /** Who is calling the desktop bridge, from the main process's point of view. */
@@ -1924,12 +2174,21 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + 'else if(u.phase==="error")line=u.error||"更新失败";'
   + '$("update-status").textContent=line;$("update-status").hidden=!line;'
   + '$("update-notes").textContent=(u.info&&u.info.notes)||"";}'
+  + 'function localLabel(s){if(s.mode!=="local")return "";'
+  + 'return s.runtimeSource==="installed"?"（本机安装的 dsh）":s.runtimeSource==="npx"?"（npx 缓存的 dsh）"'
+  + ':s.runtimeSource==="bundled"?"（内置运行时）":"";}'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
-  + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
+  + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web"+localLabel(s);'
   + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
-  + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用");'
+  + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用")'
+  + '+(s.installedDshVersion?" · 本机 dsh "+s.installedDshVersion:"");'
   + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";'
   + '$("switch").hidden=!s.canSwitch;$("switch").textContent=s.selectedMode==="connect"?"切换到本地":"切换到远程";'
+  // A live official instance we are NOT already on: offer its address instead
+  // of making the user type it. Never overwrite a saved or typed value.
+  + 'if(!$("url").value){try{const p=await(await fetch("desktop/probe")).json();'
+  + 'if(p.url&&p.url!==s.targetUrl&&!$("url").value){$("url").value=p.url;'
+  + '$("note").textContent="检测到本机正在运行的官方实例，地址已填入，点击「保存并重连」即可固定连接。"}}catch(e){}}'
   + 'renderUpdate(await(await fetch("desktop/update")).json());'
   + '}catch(e){$("status").textContent="状态不可用"}}'
   + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
@@ -2080,19 +2339,41 @@ function fallbackFromProbedInstance(reason: string): boolean {
   resetRuntimeRecoveryBudget()
   console.warn('[desktop] probed Web UI unavailable; starting local runtime (' + reason + '): ' + (failedTarget ?? 'unknown'))
   showLoadingDocument()
-  startLocalRuntime(generation)
+  // Detection can spend its full deadline on an unresponsive `dsh --version`,
+  // so this path names what it is waiting for rather than leaving the surface
+  // on the previous message.
+  if (installedDshDetection === undefined) {
+    updateLoadingStatus('正在检查本机 dsh 运行时…', 'Looking for a dsh runtime on this machine…')
+  }
+  void detectInstalledDsh().then(() => {
+    if (quitting || generation !== connectionGeneration) return
+    startLocalRuntime(generation)
+  })
   return true
 }
 
-/** Smart mode: prefer a locally running official instance, else launch our own. */
+/**
+ * Smart mode, in order: an official instance already running on this machine,
+ * then a dsh the user installed themselves, then the bundled runtime. The
+ * detection step runs only here — on the branch that is actually about to
+ * start something — so reusing a running instance stays as fast as it was.
+ */
 function resolveRuntime(force = false): void {
   const generation = ++connectionGeneration
   resetRuntimeRecoveryBudget()
-  if (devFlag('DSH_DESKTOP_SKIP_PROBE')) {
+  const startLocal = async (): Promise<void> => {
+    if (installedDshDetection === undefined) {
+      updateLoadingStatus('正在检查本机 dsh 运行时…', 'Looking for a dsh runtime on this machine…')
+    }
+    await detectInstalledDsh()
+    if (quitting || generation !== connectionGeneration) return
     startLocalRuntime(generation, force)
+  }
+  if (devFlag('DSH_DESKTOP_SKIP_PROBE')) {
+    void startLocal()
     return
   }
-  void probeWebUi(defaultWebProbeUrl()).then((probed) => {
+  void probeWebUi(defaultWebProbeUrl()).then(async (probed) => {
     if (quitting || generation !== connectionGeneration) return
     if (probed !== undefined) {
       configuredTarget = probed
@@ -2102,7 +2383,7 @@ function resolveRuntime(force = false): void {
       launchWindow(generation, force)
       return
     }
-    startLocalRuntime(generation, force)
+    await startLocal()
   })
 }
 
@@ -2293,6 +2574,10 @@ function startSettingsServer(): Promise<number> {
       writeJson(res, 200, getStatusJson())
       return
     }
+    if (pathname === '/desktop/probe') {
+      void probeDefaultWebUi().then((result) => { writeJson(res, 200, result) })
+      return
+    }
     if (pathname === '/desktop/update') {
       writeJson(res, 200, desktopUpdater?.getState() ?? { phase: 'idle', currentVersion: desktopClientVersion(), info: null, progress: null, error: 'updater not ready', dismissed: false, isChecking: false })
       return
@@ -2400,8 +2685,37 @@ function showLocalRuntimeStartupFailure(code: number | null, signal: NodeJS.Sign
   })
 }
 
+/**
+ * Last-resort disposal for an exit that never reaches `before-quit`: an
+ * uncaught exception, or a signal. The graceful ladder cannot run here — an
+ * exit handler is synchronous — but a SIGKILL still keeps the runtime from
+ * outliving the client as an orphan holding the data home and a port.
+ */
+function installEmergencyRuntimeDisposal(): void {
+  // A closed stdout (a piped launch whose reader went away) otherwise turns
+  // the next console.log into an uncaught EPIPE, which would take the client
+  // down without disposing of the child at all.
+  process.stdout.on('error', () => {})
+  process.stderr.on('error', () => {})
+  process.on('exit', () => {
+    const pid = webUi?.pid()
+    if (pid === undefined) return
+    try {
+      // An exit handler cannot await, but it can still run a synchronous
+      // command — and on Windows the tree walk is the only disposal that
+      // reaches past a cmd.exe wrapper to the server actually holding a port.
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
+        return
+      }
+      process.kill(pid, 'SIGKILL')
+    } catch { /* already gone, which is the outcome this wants */ }
+  })
+}
+
 function boot(): void {
   const settings = loadSettings()
+  installEmergencyRuntimeDisposal()
   webUi = new WebUiManager(
     (line) => { console.log('[dsh web] ' + line) },
     ({ wasReady, code, signal, retryable }) => {
@@ -2413,6 +2727,31 @@ function boot(): void {
       childTarget = undefined
       if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
       launchBudgetResetTimer = undefined
+      // A user-installed runtime that never reached readiness is not a base
+      // this session can build on, and the client does not control it. Drop to
+      // the bundled runtime immediately rather than spending the shared retry
+      // budget on identical failures — the budget still covers the fallback.
+      if (!wasReady && (webUi?.lastSource === 'installed' || webUi?.lastSource === 'npx') && !installedDshRejected) {
+        installedDshRejected = true
+        console.warn('[desktop] user-installed dsh failed to start ('
+          + String(code) + '/' + String(signal) + '); falling back to the bundled runtime')
+        const generation = connectionGeneration
+        if (mainWindowRequested) {
+          showLoadingDocument()
+          updateLoadingStatus('本机 dsh 启动失败，正在改用内置运行时…',
+            'The installed dsh did not start; switching to the bundled runtime…')
+        }
+        webUi?.spawn()
+        if (mainWindowRequested) {
+          launchWindow(generation)
+          return
+        }
+        void webUi?.ready().then((url) => {
+          if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
+          markLocalRuntimeReady(url)
+        }, () => {})
+        return
+      }
       if (retryable && launchBudget > 0) {
         launchBudget -= 1
         const delayMs = relaunchDelayMs(launchBudget)
@@ -2533,6 +2872,14 @@ if (!gotLock) {
       const caller = bridgeCaller(event)
       if (!caller.trusted) throw bridgeDenied()
       return getStatusJson(!caller.remote)
+    })
+    ipcMain.handle('desktop:connection:probe', async (event) => {
+      const caller = bridgeCaller(event)
+      if (!caller.trusted) throw bridgeDenied()
+      // What answers on this machine's loopback is local detail: a configured
+      // remote page may render the connection card, not survey the port.
+      if (caller.remote) return { url: null }
+      return probeDefaultWebUi()
     })
     ipcMain.handle('desktop:connection:save', async (event, serverUrl: unknown) => {
       const caller = bridgeCaller(event)

@@ -49,6 +49,7 @@ electronEnv.DSH_HOME = join(checkHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = desktopHome
 electronEnv.DSH_DESKTOP_PROBE_URL = probeOrigin
 Reflect.deleteProperty(electronEnv, 'DSH_DESKTOP_SKIP_PROBE')
+electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
 
 const waitForStatus = async (app, predicate, timeoutMs) => {
   const deadline = Date.now() + timeoutMs

@@ -193,6 +193,7 @@ const launchApp = async (home, extraEnv = {}) => {
   electronEnv.DSH_HOME = join(home, 'dsh')
   electronEnv.DSH_DESKTOP_HOME = join(home, 'desktop')
   electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
+  electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
   electronEnv.DSH_DESKTOP_UPDATE_FEED = origin + '/latest.json'
   electronEnv.DSH_DESKTOP_UPDATE_GITHUB_API = ''
   electronEnv.DSH_DESKTOP_SKIP_UPDATE_CHECK = '1'

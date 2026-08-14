@@ -27,6 +27,9 @@ interface ConnectionStatus {
   canSwitch: boolean
   childPid?: number
   lastError?: string
+  /** Which dsh the local child runs. Absent for a remote caller. */
+  runtimeSource?: 'override' | 'installed' | 'npx' | 'bundled' | 'checkout' | 'path'
+  installedDshVersion?: string
 }
 
 /** The connection bridge: read/save the Web UI origin through the main process. */
@@ -36,6 +39,9 @@ const connection = {
     ipcRenderer.invoke('desktop:connection:save', serverUrl) as Promise<{ saved: boolean; error?: string }>,
   switchMode: (): Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }> =>
     ipcRenderer.invoke('desktop:connection:switch') as Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }>,
+  /** An official Web UI answering on the default port right now, if any. */
+  probeLocal: (): Promise<{ url: string | null }> =>
+    ipcRenderer.invoke('desktop:connection:probe') as Promise<{ url: string | null }>,
 }
 
 interface UpdateInfo {
@@ -416,15 +422,30 @@ function injectEnhance(panel: Element): void {
     }
   })
   void connection.getStatus().then((status) => {
+    const installedName = status.runtimeSource === 'installed'
+      ? '本机安装的 dsh'
+      : status.runtimeSource === 'npx' ? 'npx 缓存的 dsh' : undefined
+    const localLabel = installedName !== undefined
+      ? '本地 dsh web（' + installedName
+        + (status.installedDshVersion === undefined ? '' : ' v' + status.installedDshVersion) + '）'
+      : status.runtimeSource === 'bundled' ? '本地 dsh web（内置运行时）' : '本地 dsh web'
     const modeLabel = status.mode === 'probe'
       ? '已连接本机正在运行的官方实例'
-      : status.mode === 'connect' ? '固定连接' : '本地 dsh web'
+      : status.mode === 'connect' ? '固定连接' : localLabel
     statusEl.textContent = modeLabel + ' → ' + (status.targetUrl || '（未就绪）')
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
     urlEl.value = status.savedServerUrl
     switchEl.hidden = !status.canSwitch
     switchEl.textContent = status.selectedMode === 'connect' ? '切换到本地' : '切换到远程'
+    // Nothing saved: offer a live official instance on the default port, so
+    // switching to it is one click. Never overwrite a value already in the box.
+    if (status.savedServerUrl !== '') return
+    void connection.probeLocal().then((probe) => {
+      if (probe.url === null || probe.url === status.targetUrl || urlEl.value !== '') return
+      urlEl.value = probe.url
+      noteEl.textContent = '检测到本机正在运行的官方实例，地址已填入，点击「保存并重连」即可固定连接。'
+    }).catch(() => { /* the offer is a convenience; its absence is not an error */ })
   }).catch(() => { statusEl.textContent = '连接状态不可用' })
   panel.appendChild(block)
 }

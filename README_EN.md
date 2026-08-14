@@ -19,7 +19,7 @@ The desktop client and official `dsh` use independent version numbers; there is 
 
 - **The real Harness experience** — the app loads the official Web UI itself. Projects, conversations, tasks, models, permissions, goals, plans, skills, and slash commands behave exactly as they do in the official product.
 - **Desktop connection enhancements** — a clearly labeled connection card is added to the official settings surface, with a separate native connection window. These additions belong to this project and are not official Web UI features.
-- **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you.
+- **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you in the background, using your own installed `dsh` when you have one and the bundled runtime otherwise.
 - **Keep your work continuous** — local mode uses the same `~/.dsh` data as the `dsh` CLI and browser Web UI. Your conversations, titles, credentials, and model configuration stay together.
 - **Connect wherever your Agent runs** — use the local runtime for everyday work, or point the app at another reachable `dsh Web UI` instance.
 - **A desktop-native home for long-running work** — close the window without stopping the app, reopen it from the system tray, and keep Agent sessions separate from browser clutter.
@@ -78,10 +78,16 @@ pnpm install
 pnpm run dev
 ```
 
-On launch, **Smart mode** first checks `http://127.0.0.1:3080`:
+On launch, **Smart mode** picks a runtime in this order:
 
-1. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process.
-2. Otherwise, the app starts `dsh web --port 0` with the pinned official runtime bundled in the installer or project dependencies.
+1. It checks `http://127.0.0.1:3080`. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process.
+2. If nothing answers, it looks for a `dsh` you already installed on PATH (a working `dsh --version` is the whole test).
+3. Then it looks for a copy npx has already cached. **The official instruction, `npx @deepseek-ai/dsh web`, installs nothing onto PATH** — it leaves the complete package in npm's cache (`~/.npm/_npx/` on POSIX, `%LOCALAPPDATA%\npm-cache\_npx\` on Windows). Running it once is enough for the client to reuse it.
+4. Only if none of those exist does it use the pinned official runtime bundled in the installer or project dependencies.
+
+Steps 2 and 3 run on **your own Node** and use only packages that are **already present** — nothing is downloaded, and Node.js is never installed for you; an empty cache is simply skipped. The client reads the cached package's `package.json` to confirm it really is `@deepseek-ai/dsh` and to report its true version, so nothing else sitting at that path can be launched by mistake.
+
+What gets started is always a plain background service (`dsh web --port 0`) — not a browser window, and never on port 3080 — and the client shuts it down when you quit. If the chosen runtime fails to start, the client falls back to the bundled one automatically. Connection settings show which runtime is in use (installed / npx cache / bundled) and its version.
 
 If the bundled runtime cannot start, or you want to use another instance, open the application menu and choose **Web UI Connection…**.
 
@@ -105,7 +111,7 @@ The client serves two audiences, and both paths are first-class:
 
 | Mode | Best for | Behavior |
 |---|---|---|
-| **Smart** (default) | Most local users | Reuses the official instance on `127.0.0.1:3080`, or starts a local `dsh web` process when needed. |
+| **Smart** (default) | Most local users | Tries in order: the official instance on `127.0.0.1:3080` → a `dsh` on PATH → an npx-cached official package → the bundled runtime. |
 | **Connect** | Remote machines, containers, or a manually managed runtime | Connects to the Web UI address you provide and does not start a local runtime. |
 
 In Smart mode, an official Web UI already running in your terminal is reused as-is — the developer path: sessions stay shared with the desktop window while the Agent runs inside your own complete shell environment.

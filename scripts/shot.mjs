@@ -15,6 +15,8 @@ const readmeMode = process.argv[2] === '--readme'
 const outDir = readmeMode ? join(APP_DIR, 'docs', 'images') : (process.argv[2] ?? join(APP_DIR, 'shots'))
 const electronEnv = { ...process.env }
 Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
+// Screenshots document the shipped runtime, not a developer's installed dsh.
+electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
 mkdirSync(outDir, { recursive: true })
 
 const shot = async (page, name) => {

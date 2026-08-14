@@ -95,6 +95,7 @@ Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
 electronEnv.DSH_HOME = join(checkHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = desktopHome
 electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
+electronEnv.DSH_DESKTOP_SKIP_INSTALLED_DSH = '1'
 
 let app
 try {
