@@ -17,7 +17,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -150,9 +150,17 @@ try {
   }
   const resultLine = stdout.trim().split(/\r?\n/).at(-1)
   const result = JSON.parse(resultLine ?? '{}')
-  if (result.path !== expectedPath) {
+  // Hosted Windows runners can expose TEMP through an 8.3 alias such as
+  // RUNNER~1 while the Shell COM API returns the equivalent long path. Resolve
+  // both existing paths before comparison; casing is also non-semantic here.
+  const [actualCanonical, expectedCanonical] = await Promise.all([
+    realpath(result.path),
+    realpath(expectedPath),
+  ])
+  if (actualCanonical.toLowerCase() !== expectedCanonical.toLowerCase()) {
     throw new Error('Electron Win32 picker probe returned ' + JSON.stringify(result.path)
-      + ', expected ' + JSON.stringify(expectedPath))
+      + ', expected ' + JSON.stringify(expectedPath)
+      + ' (canonical paths: ' + JSON.stringify(actualCanonical) + ' / ' + JSON.stringify(expectedCanonical) + ')')
   }
   console.log('✓ Electron Node read the Unicode Win32 path without koffi.view')
 } finally {
