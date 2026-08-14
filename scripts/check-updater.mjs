@@ -20,6 +20,42 @@ const work = await mkdtemp(join(tmpdir(), 'dsh-desktop-updater-'))
 const artifacts = join(work, 'artifacts')
 mkdirSync(artifacts, { recursive: true })
 
+const changelogFixture = join(work, 'CHANGELOG.md')
+const releaseNotesFile = join(work, 'release-notes.md')
+const releaseChangesFile = join(work, 'release-changes.md')
+writeFileSync(changelogFixture, [
+  '# Changes',
+  '',
+  '## [9.9.9]',
+  '',
+  '### 新增',
+  '- fixture release change',
+  '',
+  '## [9.9.8]',
+  '- old change that must not leak',
+  '',
+].join('\n'))
+execFileSync(process.execPath, [
+  join(APP_DIR, 'scripts', 'write-release-notes.mjs'),
+  '--version', '9.9.9',
+  '--changelog', changelogFixture,
+  '--out', releaseNotesFile,
+  '--changes-out', releaseChangesFile,
+], { stdio: 'pipe' })
+const releaseNotes = readFileSync(releaseNotesFile, 'utf8')
+const releaseChanges = readFileSync(releaseChangesFile, 'utf8')
+if (!releaseNotes.includes('fixture release change')
+  || releaseNotes.includes('old change that must not leak')
+  || !releaseNotes.includes('dsh-desktop-9.9.9-mac-arm64.dmg')
+  || !releaseNotes.includes('dsh-desktop-9.9.9-mac-x64.dmg')
+  || !releaseNotes.includes('dsh-desktop-9.9.9-win-x64.exe')) {
+  throw new Error('generated GitHub Release notes are incomplete')
+}
+if (releaseChanges !== '### 新增\n- fixture release change\n') {
+  throw new Error('in-app changes must contain only the selected CHANGELOG section: ' + JSON.stringify(releaseChanges))
+}
+console.log('✓ write-release-notes.mjs selects one version and explains every installer')
+
 const winBytes = Buffer.from('fake-win-installer')
 const macBytes = Buffer.from('fake-mac-installer')
 writeFileSync(join(artifacts, 'dsh-desktop-9.9.9-win-x64.exe'), winBytes)

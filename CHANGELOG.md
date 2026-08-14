@@ -18,6 +18,7 @@
 - macOS 读取登录 shell PATH 时优先使用交互式登录 shell，找回写在 `~/.zshrc` 里的工具目录（如 `~/.local/bin`），失败时退回原有的非交互登录 shell
 - macOS 安装包补充文件访问用途说明，系统在询问桌面、文稿、下载等目录权限时会说明 Agent 的用途
 - Windows 托盘图标随系统明暗主题自动切换，避免在浅色或深色任务栏上失去对比度
+- GitHub Release 自动读取当前版本 CHANGELOG，清晰列出版本变化、安装包选择和 macOS／Windows 安装步骤
 
 ### 安全
 - 打包环境下更新源地址与 GitHub API 地址禁止被环境变量覆盖，避免更新流程被劫持到非官方地址
