@@ -114,6 +114,9 @@ check('official settings dialog', settingsDialogVisible, '[role="presentation"]'
 const enhancedCardVisible = await settingsDialog.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3000 })
   .then(() => true, () => false)
 check('desktop connection card', enhancedCardVisible, '#dsh-desktop-enhance')
+const updateCardVisible = await settingsDialog.locator('#dsh-desktop-update').waitFor({ state: 'visible', timeout: 3_000 })
+  .then(() => true, () => false)
+check('desktop update card', updateCardVisible, '#dsh-desktop-update')
 check('connection shortcut hidden without a saved remote address',
   await settingsDialog.locator('#dsh-enhance-switch').isHidden(), '#dsh-enhance-switch')
 
@@ -140,6 +143,7 @@ check('connection card follows dark theme tokens',
 await settingsDialog.getByRole('button', { name: /模型|Models/ }).click()
 await window.waitForTimeout(200)
 check('connection card leaves Models tab', await settingsDialog.locator('#dsh-desktop-enhance').count() === 0, 'Models')
+check('update card leaves Models tab', await settingsDialog.locator('#dsh-desktop-update').count() === 0, 'Models')
 const deepSeekHelp = settingsDialog.locator('.dsh-desktop-key-help a')
 await checkKeyHelpLink('DeepSeek settings key link', deepSeekHelp)
 

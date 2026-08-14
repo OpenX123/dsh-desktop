@@ -122,6 +122,7 @@ Electron 窗口已开启上下文隔离与沙箱、关闭 Node 集成，将页�
 - 关闭主窗口后，应用继续驻留在系统托盘或 macOS 菜单栏。
 - 点击托盘图标可以重新打开主窗口。
 - 可通过托盘菜单，或 macOS 的应用菜单 / `Cmd+Q` 完全退出。Windows、Linux 窗口内不显示菜单栏。
+- 发布版启动约 4 秒后会检查 GitHub Releases 上的新版本（12 小时内不重复自动检查）。也可在「设置 → 通用设置 → 应用更新」、托盘菜单或 macOS 应用菜单中手动检查；确认后下载安装包、校验 SHA-256 并启动安装程序。开发态默认不自动检查。
 - 智能模式复用的 `127.0.0.1:3080` 官方实例失联时，客户端会自动回落到内置本地 `dsh web`；固定远程连接失败不会擅自改用本地服务。
 - 本地 Web UI 意外退出时，客户端只会进行有限次数的重启，不会无限循环。
 - 系统唤醒或长时间后台运行后若页面异常空白，客户端会在确认 Web UI 可达后自动重新加载。
@@ -136,6 +137,7 @@ pnpm run check:picker   # 验证内置 Win32 目录选择器兼容补丁
 pnpm run dist           # 为当前平台生成安装包
 pnpm run typecheck      # TypeScript 类型检查
 pnpm run lint           # 检查源码与脚本
+pnpm run check:updater  # 验证应用内更新检查、哈希校验与忽略版本
 pnpm run audit          # 启动与浏览器界面冒烟验证
 pnpm run smoke:package  # 验证打包应用确实使用内置 dsh 运行时
 pnpm run shot           # 更新 shots/ 中的截图
@@ -143,7 +145,7 @@ pnpm run shot:readme    # 更新 README 使用的隐私安全截图
 pnpm run e2e            # 发送真实请求并验证流式回复
 ```
 
-`pnpm run e2e` 需要有效的 API Key。生产窗口直接加载官方 Web UI；仓库不维护第二套产品 renderer。
+`pnpm run e2e` 需要有效的 API Key。生产窗口直接加载官方 Web UI；仓库不维护第二套产品 renderer。`pnpm run check:updater` 用本地更新清单夹具验证检查、下载校验和忽略版本。
 
 进程模型、信任边界和设计取舍详见[桌面客户端架构](docs/desktop-client-architecture.zh.md)。
 
@@ -164,11 +166,11 @@ GitHub Actions 会校验 tag 格式，并以 tag 作为发布版本分别构建�
 
 Linux 安装包暂不在自动发布范围内；源码中的通用平台兼容逻辑仍予保留。
 
-全部平台构建成功后，工作流会生成 SHA-256 校验文件，并创建或更新对应的 GitHub Release。包含 `-rc`、`-beta` 等预发布标识的 tag 会自动标记为预发布版本。
+全部平台构建成功后，工作流会生成 SHA-256 校验文件和 `latest.json` 在线更新清单，并创建或更新对应的 GitHub Release。包含 `-rc`、`-beta` 等预发布标识的 tag 会自动标记为预发布版本；预发布不会成为 `/releases/latest` 上的更新源。
 
 ## 当前状态
 
-桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、内置官方 `@deepseek-ai/dsh`、macOS/Windows 打包和 tag 自动发布流程均已实现。发布流水线会在空 PATH 下启动打包应用并探测 Web UI，阻止遗漏内置运行时的产物发布。当前自动产物尚未进行代码签名；macOS/Windows 签名与公证仍是面向普通用户无警告安装的发布前置条件。系统通知、OS Keychain 与语音输入也属于后续工作。
+桌面外壳、智能/连接模式、共享 `DSH_HOME`、托盘常驻、运行时监护、应用内在线更新、内置官方 `@deepseek-ai/dsh`、macOS/Windows 打包和 tag 自动发布流程均已实现。发布流水线会在空 PATH 下启动打包应用并探测 Web UI，阻止遗漏内置运行时的产物发布。当前自动产物尚未进行代码签名；macOS/Windows 签名与公证仍是面向普通用户无警告安装的发布前置条件。系统通知、OS Keychain 与语音输入也属于后续工作。
 
 欢迎提交贡献与问题反馈，尤其是 Windows 使用、远程连接和打包方面的反馈。
 

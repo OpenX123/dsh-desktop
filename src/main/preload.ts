@@ -39,6 +39,33 @@ const connection = {
     ipcRenderer.invoke('desktop:connection:switch') as Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }>,
 }
 
+interface UpdateInfo {
+  currentVersion: string
+  availableVersion: string
+  notes?: string
+  pubDate?: string
+}
+
+interface UpdateState {
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'installing' | 'restartRequired' | 'upToDate' | 'error'
+  currentVersion: string
+  info: UpdateInfo | null
+  progress: { total: number; downloaded: number; percent: number } | null
+  error: string | null
+  dismissed: boolean
+  isChecking: boolean
+}
+
+type CheckUpdateResult = { hasUpdate: false } | { hasUpdate: true; info: UpdateInfo }
+
+const update = {
+  getStatus: (): Promise<UpdateState> => ipcRenderer.invoke('desktop:update:status') as Promise<UpdateState>,
+  check: (): Promise<CheckUpdateResult> => ipcRenderer.invoke('desktop:update:check') as Promise<CheckUpdateResult>,
+  install: (): Promise<{ started: boolean; error?: string }> =>
+    ipcRenderer.invoke('desktop:update:install') as Promise<{ started: boolean; error?: string }>,
+  dismiss: (): Promise<void> => ipcRenderer.invoke('desktop:update:dismiss') as Promise<void>,
+}
+
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
   username: argValue('dsh-username') ?? 'user',
@@ -48,6 +75,7 @@ contextBridge.exposeInMainWorld('desktop', {
     node: process.versions.node,
   },
   connection,
+  update,
   /** Open the client's native connection-settings window (tray-era fallback). */
   openConnectionSettings: (): void => { ipcRenderer.send('desktop:open-connection-settings') },
 })
@@ -62,6 +90,7 @@ contextBridge.exposeInMainWorld('desktop', {
 // ---------------------------------------------------------------------------
 
 const ENHANCE_ID = 'dsh-desktop-enhance'
+const UPDATE_ID = 'dsh-desktop-update'
 
 function visible(el: Element): boolean {
   const rect = el.getBoundingClientRect()
@@ -105,7 +134,7 @@ function isGeneralTab(dialog: Element): boolean {
  */
 function findVisiblePanel(options: Element): Element | null {
   for (const child of options.children) {
-    if (child.id === ENHANCE_ID) continue
+    if (child.id === ENHANCE_ID || child.id === UPDATE_ID) continue
     if (hasVisibleContent(child)) return child
   }
   return null
@@ -147,6 +176,17 @@ function injectEnhance(panel: Element): void {
       '#' + ENHANCE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-switch:hover{opacity:.88;background:var(--dsw-alias-label-primary,#0F1115)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-note{margin:10px 0 0;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
+      '#' + UPDATE_ID + '{margin:0;padding:16px 0}',
+      '#' + UPDATE_ID + ' .dsh-update-title{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:14px;font-weight:500;color:var(--dsw-alias-label-primary,#0F1115)}',
+      '#' + UPDATE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:var(--dsw-alias-label-primary,#0F1115);background:var(--dsw-alias-bg-module-platform,#EBEEF2);border-radius:999px;padding:2px 8px}',
+      '#' + UPDATE_ID + ' .dsh-update-status{margin:0 0 8px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
+      '#' + UPDATE_ID + ' .dsh-update-notes{margin:0 0 10px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480);white-space:pre-wrap;max-height:120px;overflow:auto}',
+      '#' + UPDATE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
+      '#' + UPDATE_ID + ' .dsh-enhance-button{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
+      '#' + UPDATE_ID + ' .dsh-enhance-button:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
+      '#' + UPDATE_ID + ' .dsh-enhance-button:disabled{cursor:default;opacity:.55}',
+      '#' + UPDATE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
+      '#' + UPDATE_ID + ' .dsh-enhance-switch:hover{opacity:.88;background:var(--dsw-alias-label-primary,#0F1115)}',
     ].join('')
     document.head.appendChild(style)
   }
@@ -202,6 +242,119 @@ function injectEnhance(panel: Element): void {
     switchEl.textContent = status.selectedMode === 'connect' ? '切换到本地' : '切换到远程'
   }).catch(() => { statusEl.textContent = '连接状态不可用' })
   panel.appendChild(block)
+}
+
+function updateCopy(english: boolean): {
+  title: string
+  badge: string
+  check: string
+  checking: string
+  install: string
+  dismiss: string
+  upToDate: string
+  found: string
+  downloading: string
+  installing: string
+  restart: string
+  unavailable: string
+} {
+  if (english) {
+    return {
+      title: 'App updates',
+      badge: 'Enhanced',
+      check: 'Check for updates',
+      checking: 'Checking…',
+      install: 'Download and install',
+      dismiss: 'Remind me later',
+      upToDate: 'You are on the latest version',
+      found: 'New version available',
+      downloading: 'Downloading',
+      installing: 'Starting the installer…',
+      restart: 'Install the new copy, then reopen the app',
+      unavailable: 'Update status unavailable',
+    }
+  }
+  return {
+    title: '应用更新',
+    badge: '增强功能',
+    check: '检查更新',
+    checking: '检查中…',
+    install: '下载并安装',
+    dismiss: '稍后提醒',
+    upToDate: '已是最新版本',
+    found: '发现新版本',
+    downloading: '下载中',
+    installing: '正在启动安装程序…',
+    restart: '请安装新版本后重新打开应用',
+    unavailable: '更新状态不可用',
+  }
+}
+
+function paintUpdateCard(state: UpdateState, english: boolean): void {
+  const block = document.getElementById(UPDATE_ID)
+  if (block === null) return
+  const copy = updateCopy(english)
+  const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
+  const notesEl = block.querySelector('#dsh-update-notes') as HTMLElement | null
+  const checkEl = block.querySelector('#dsh-update-check') as HTMLButtonElement | null
+  const installEl = block.querySelector('#dsh-update-install') as HTMLButtonElement | null
+  const dismissEl = block.querySelector('#dsh-update-dismiss') as HTMLButtonElement | null
+  if (statusEl === null || notesEl === null || checkEl === null || installEl === null || dismissEl === null) return
+
+  const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'installing'
+  checkEl.disabled = busy
+  checkEl.textContent = state.phase === 'checking' ? copy.checking : copy.check
+  const showInstall = state.phase === 'available' && state.info !== null && !busy
+  installEl.hidden = !showInstall
+  dismissEl.hidden = !showInstall || state.dismissed
+  installEl.disabled = busy
+
+  let line = 'v' + state.currentVersion
+  if (state.phase === 'checking') line += ' · ' + copy.checking
+  else if (state.phase === 'upToDate') line += ' · ' + copy.upToDate
+  else if (state.phase === 'available' && state.info !== null) line += ' · ' + copy.found + ' v' + state.info.availableVersion
+  else if (state.phase === 'downloading') {
+    const percent = state.progress?.percent
+    line += ' · ' + copy.downloading + (typeof percent === 'number' && percent > 0 ? ' ' + String(percent) + '%' : '…')
+  } else if (state.phase === 'installing') line += ' · ' + copy.installing
+  else if (state.phase === 'restartRequired') line += ' · ' + copy.restart
+  else if (state.phase === 'error') line += ' · ' + (state.error ?? copy.unavailable)
+  statusEl.textContent = line
+  notesEl.textContent = state.info?.notes ?? ''
+  notesEl.hidden = (state.info?.notes ?? '') === ''
+}
+
+function injectUpdate(panel: Element, english: boolean): void {
+  if (panel.querySelector('#' + UPDATE_ID) !== null) return
+  const copy = updateCopy(english)
+  const block = document.createElement('div')
+  block.id = UPDATE_ID
+  block.innerHTML =
+    '<div class="dsh-update-title">' + copy.title + '<span class="dsh-enhance-badge">' + copy.badge + '</span></div>'
+    + '<p class="dsh-update-status" id="dsh-update-status"></p>'
+    + '<p class="dsh-update-notes" id="dsh-update-notes" hidden></p>'
+    + '<div class="dsh-enhance-actions">'
+    + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-update-install" type="button" hidden>' + copy.install + '</button>'
+    + '<button class="dsh-enhance-button" id="dsh-update-check" type="button">' + copy.check + '</button>'
+    + '<button class="dsh-enhance-button" id="dsh-update-dismiss" type="button" hidden>' + copy.dismiss + '</button>'
+    + '</div>'
+  block.querySelector('#dsh-update-check')?.addEventListener('click', () => {
+    void update.check()
+      .then(() => update.getStatus())
+      .then((state) => { paintUpdateCard(state, english) })
+      .catch(() => {})
+  })
+  block.querySelector('#dsh-update-install')?.addEventListener('click', () => {
+    void update.install().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})
+  })
+  block.querySelector('#dsh-update-dismiss')?.addEventListener('click', () => {
+    void update.dismiss().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})
+  })
+  panel.appendChild(block)
+  void update.getStatus().then((state) => { paintUpdateCard(state, english) }).catch(() => {
+    const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
+    if (statusEl !== null) statusEl.textContent = copy.unavailable
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +442,13 @@ function watchSettingsDialog(): void {
     // official row). Withdraw it whenever its seat is no longer showing.
     const panel = generalPanel()
     const existing = document.getElementById(ENHANCE_ID)
+    const existingUpdate = document.getElementById(UPDATE_ID)
     if (panel === null || (existing !== null && existing.parentElement !== panel)) existing?.remove()
-    if (panel !== null) injectEnhance(panel)
+    if (panel === null || (existingUpdate !== null && existingUpdate.parentElement !== panel)) existingUpdate?.remove()
+    if (panel !== null) {
+      injectEnhance(panel)
+      injectUpdate(panel, !isChineseGeneralTab())
+    }
   }
 
   /** The visible general-tab panel of the open settings dialog, when that is what is showing. */
@@ -315,7 +473,16 @@ function watchSettingsDialog(): void {
     })
   }
   new MutationObserver(scheduleProbe).observe(document.documentElement, { childList: true, subtree: true })
+  ipcRenderer.on('desktop:update:changed', (_event, state: UpdateState) => {
+    paintUpdateCard(state, !isChineseGeneralTab())
+  })
   probe()
+}
+
+function isChineseGeneralTab(): boolean {
+  const dialog = findSettingsDialog()
+  if (dialog === null) return true
+  return isGeneralTab(dialog) && !/General/i.test(dialog.querySelector('[class*="navList"]')?.querySelector('[class*="active"]')?.textContent ?? '')
 }
 
 if (document.readyState === 'loading') {

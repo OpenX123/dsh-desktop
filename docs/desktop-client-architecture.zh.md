@@ -10,8 +10,8 @@
 
 客户端（本仓库 `dsh-desktop`）包含三层运行时结构：
 
-- **Electron 主进程**（`src/main/`）：负责窗口和 Web UI 运行时。**本地模式**先探测默认回环实例，否则启动 `dsh web --port 0`；探测复用的实例失联时自动回落到受管本地运行时。**连接模式**使用配置的 Web UI 源站，失败时保持该明确选择并提示用户，不自动改用本地服务。开发环境的命令依次从 `DSH_DESKTOP_DSH`、应用固定依赖中的 `@deepseek-ai/dsh`、同级检出与 PATH 解析。正式安装包必须携带完整的官方 CLI 运行时闭包；缺失时直接报告安装损坏，不会静默回退到 PATH。子进程监护包含有限重试、稳定窗口后的重试额度恢复、逐 generation 就绪状态、陈旧回调拦截与优雅退出（POSIX 为 SIGTERM→SIGKILL，Windows 为 `taskkill /T /F`）。打包后通过 Electron 的 Node 模式（`ELECTRON_RUN_AS_NODE`）运行内置 CLI。macOS 发布版在启动它之前会在受限时间内合并登录 shell PATH，供后续 Agent 子进程继承。
-- **窗口表面**：Electron ready 后立即显示一个本地 Loading 文档，运行时就绪后由同一安全窗口直接加载 **官方 Web UI 本体**。会话标题、控件和所有产品交互因此都是官方行为。preload 只暴露小型连接桥，并可在官方设置弹窗里追加明确标注的连接卡片和 DeepSeek Key 帮助链接。仓库不维护或构建第二套产品 renderer。
+- **Electron 主进程**（`src/main/`）：负责窗口、Web UI 运行时和桌面端在线更新。在线更新读取 GitHub Release 上的 `latest.json`（由发布流水线根据安装包与 SHA-256 生成），校验哈希后启动对应平台安装包；不使用 electron-updater，也不让 electron-builder 推断发布通道。开发态默认不自动检查。**本地模式**先探测默认回环实例，否则启动 `dsh web --port 0`；探测复用的实例失联时自动回落到受管本地运行时。**连接模式**使用配置的 Web UI 源站，失败时保持该明确选择并提示用户，不自动改用本地服务。开发环境的命令依次从 `DSH_DESKTOP_DSH`、应用固定依赖中的 `@deepseek-ai/dsh`、同级检出与 PATH 解析。正式安装包必须携带完整的官方 CLI 运行时闭包；缺失时直接报告安装损坏，不会静默回退到 PATH。子进程监护包含有限重试、稳定窗口后的重试额度恢复、逐 generation 就绪状态、陈旧回调拦截与优雅退出（POSIX 为 SIGTERM→SIGKILL，Windows 为 `taskkill /T /F`）。打包后通过 Electron 的 Node 模式（`ELECTRON_RUN_AS_NODE`）运行内置 CLI。macOS 发布版在启动它之前会在受限时间内合并登录 shell PATH，供后续 Agent 子进程继承。
+- **窗口表面**：Electron ready 后立即显示一个本地 Loading 文档，运行时就绪后由同一安全窗口直接加载 **官方 Web UI 本体**。会话标题、控件和所有产品交互因此都是官方行为。preload 只暴露小型连接桥，并可在官方设置弹窗里追加明确标注的连接卡片、应用更新区块和 DeepSeek Key 帮助链接。仓库不维护或构建第二套产品 renderer。
 - **设置接缝**：带随机私密路径的最小回环页面承载原生连接窗口，并把 `settings.json` 写入 `~/.dsh-desktop`。它不是 API carrier，不代理 `/api`、WebSocket 或 renderer 资源。
 
 客户端自己的连接设置放在 `~/.dsh-desktop`（可用 `DSH_DESKTOP_HOME` 覆盖）；本地子进程使用**官方 `DSH_HOME`（`~/.dsh`）**——会话、标题、凭据、模型配置与 `dsh` CLI 和浏览器端官方 Web UI 共享。窗口使用官方 logo（macOS 模板 Dock 图标、Windows/Linux 窗口图标）与标准标题栏（官方 Web UI 自带 header）。凭据接缝按原样使用：`DEEPSEEK_API_KEY` 经官方界面的设置写入。

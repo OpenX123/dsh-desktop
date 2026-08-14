@@ -30,6 +30,7 @@
     "audit": "node scripts/audit.mjs",
     "check:connection": "node scripts/check-connection-switch.mjs",
     "check:auto-fallback": "node scripts/check-auto-fallback.mjs",
+    "check:updater": "node scripts/check-updater.mjs",
     "smoke:package": "node scripts/smoke-package.mjs",
     "e2e": "node scripts/e2e.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

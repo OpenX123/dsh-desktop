@@ -25,6 +25,14 @@ import { homedir, userInfo } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from 'electron'
+import {
+  AUTO_CHECK_DELAY_MS,
+  DesktopUpdater,
+  defaultGithubApiUrl,
+  defaultUpdateFeedUrl,
+  type UpdateInfo,
+  type UpdateState,
+} from './updater.ts'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -51,6 +59,10 @@ interface ClientSettings {
   serverUrl?: string
   /** Missing preserves the legacy behavior: a saved serverUrl is active. */
   connectionMode?: 'smart' | 'connect'
+  /** Last in-app update the user chose to ignore. */
+  updateDismissedVersion?: string
+  /** Epoch ms of the last completed update check (auto-check throttle). */
+  updateLastCheckedAt?: number
 }
 
 function loadSettings(): ClientSettings {
@@ -64,6 +76,22 @@ function loadSettings(): ClientSettings {
 function saveSettings(settings: ClientSettings): void {
   mkdirSync(clientHome(), { recursive: true })
   writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n')
+}
+
+/** Merge settings and persist. `unset` drops keys so a later save cannot leak them. */
+function patchSettings(patch: Partial<ClientSettings> = {}, unset: readonly (keyof ClientSettings)[] = []): void {
+  const merged: ClientSettings = { ...loadSettings(), ...patch }
+  const skip = new Set(unset)
+  const next: ClientSettings = {}
+  if (!skip.has('serverUrl') && merged.serverUrl !== undefined) next.serverUrl = merged.serverUrl
+  if (!skip.has('connectionMode') && merged.connectionMode !== undefined) next.connectionMode = merged.connectionMode
+  if (!skip.has('updateDismissedVersion') && merged.updateDismissedVersion !== undefined) {
+    next.updateDismissedVersion = merged.updateDismissedVersion
+  }
+  if (!skip.has('updateLastCheckedAt') && merged.updateLastCheckedAt !== undefined) {
+    next.updateLastCheckedAt = merged.updateLastCheckedAt
+  }
+  saveSettings(next)
 }
 
 /** Normalize a user-supplied Web UI address to an origin, or undefined when blank/invalid. */
@@ -422,6 +450,7 @@ let settingsServerPort = 0
 /** Bearer-like unguessable path: loopback binding alone is not authorization. */
 const settingsServerPath = '/' + randomBytes(24).toString('hex') + '/'
 let tray: Tray | null = null
+let desktopUpdater: DesktopUpdater | undefined
 let webUi: WebUiManager | undefined
 const MAX_LAUNCH_RETRIES = 3
 const INITIAL_RELAUNCH_DELAY_MS = 250
@@ -752,10 +781,10 @@ function openSettingsWindow(): void {
     return
   }
   settingsWindow = new BrowserWindow({
-    width: 460,
-    height: 320,
+    width: 480,
+    height: 520,
     title: 'Web UI 连接',
-    resizable: false,
+    resizable: true,
     minimizable: false,
     maximizable: false,
     backgroundColor: '#FFFFFF',
@@ -784,26 +813,36 @@ function createTray(): void {
   if (icon.isEmpty()) return
   tray = new Tray(icon)
   tray.setToolTip('DeepSeek Harness')
-  const showMain = (): void => {
-    if (mainWindow === null) {
-      launchWindow()
-      return
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-  }
-  const menu = Menu.buildFromTemplate([
-    { label: '显示主窗口', click: showMain },
-    { type: 'separator' },
-    { label: '退出', click: () => { app.quit() } },
-  ])
   if (process.platform === 'darwin') {
-    tray.on('click', showMain)
-    tray.on('right-click', () => { tray?.popUpContextMenu(menu) })
-  } else {
-    tray.setContextMenu(menu)
+    tray.on('click', showMainWindow)
+    tray.on('right-click', () => { tray?.popUpContextMenu(Menu.buildFromTemplate(trayMenuTemplate())) })
   }
+  refreshTrayMenu()
+}
+
+function trayMenuTemplate(): Electron.MenuItemConstructorOptions[] {
+  const state = desktopUpdater?.getState()
+  const updateLabel = state?.phase === 'available' && state.info !== null && !state.dismissed
+    ? (localeChinese() ? '更新到 v' : 'Update to v') + state.info.availableVersion
+    : (localeChinese() ? '检查更新…' : 'Check for Updates…')
+  return [
+    { label: localeChinese() ? '显示主窗口' : 'Show Window', click: showMainWindow },
+    { label: updateLabel, click: () => { void handleManualUpdateCheck(true) } },
+    { type: 'separator' },
+    { label: localeChinese() ? '退出' : 'Quit', click: () => { app.quit() } },
+  ]
+}
+
+function refreshTrayMenu(): void {
+  if (tray === null) return
+  const state = desktopUpdater?.getState()
+  const tip = state?.phase === 'available' && state.info !== null && !state.dismissed
+    ? 'DeepSeek Harness · v' + state.info.availableVersion
+    : 'DeepSeek Harness'
+  tray.setToolTip(tip)
+  const menu = Menu.buildFromTemplate(trayMenuTemplate())
+  if (process.platform === 'darwin') return
+  tray.setContextMenu(menu)
 }
 
 /** The connection facts shared by the settings server and the IPC bridge. */
@@ -861,14 +900,245 @@ function bundledDshVersion(): string | null {
   return cachedBundledDshVersion
 }
 
+function loadUpdatePersistence(): { dismissedVersion?: string; lastCheckedAt?: number } {
+  const settings = loadSettings()
+  return {
+    ...settings.updateDismissedVersion !== undefined && { dismissedVersion: settings.updateDismissedVersion },
+    ...settings.updateLastCheckedAt !== undefined && { lastCheckedAt: settings.updateLastCheckedAt },
+  }
+}
+
+function saveUpdatePersistence(next: { dismissedVersion?: string; lastCheckedAt?: number }): void {
+  const unset: (keyof ClientSettings)[] = []
+  if (next.dismissedVersion === undefined) unset.push('updateDismissedVersion')
+  patchSettings({
+    ...next.dismissedVersion !== undefined && { updateDismissedVersion: next.dismissedVersion },
+    ...next.lastCheckedAt !== undefined && { updateLastCheckedAt: next.lastCheckedAt },
+  }, unset)
+}
+
+function createDesktopUpdater(): DesktopUpdater {
+  return new DesktopUpdater({
+    currentVersion: desktopClientVersion(),
+    feedUrl: defaultUpdateFeedUrl(),
+    githubApiUrl: defaultGithubApiUrl(),
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    downloadDir: join(clientHome(), 'updates'),
+    loadPersistence: loadUpdatePersistence,
+    savePersistence: saveUpdatePersistence,
+    dryRun: process.env.DSH_DESKTOP_UPDATE_DRY_RUN === '1',
+  })
+}
+
+let lastTrayUpdateSignature = ''
+
+function broadcastUpdateState(state: UpdateState): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('desktop:update:changed', state)
+  }
+  const signature = [
+    state.phase,
+    state.info?.availableVersion ?? '',
+    state.dismissed ? '1' : '0',
+    state.error ?? '',
+  ].join('\0')
+  if (signature === lastTrayUpdateSignature) return
+  lastTrayUpdateSignature = signature
+  refreshTrayMenu()
+}
+
+function showMainWindow(): void {
+  if (mainWindow === null) {
+    launchWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function localeChinese(): boolean {
+  return app.getLocale().toLowerCase().startsWith('zh')
+}
+
+function updateDialogCopy(): {
+  found: string
+  latest: string
+  later: string
+  ignore: string
+  install: string
+  failed: string
+  checking: string
+} {
+  if (localeChinese()) {
+    return {
+      found: '发现新版本',
+      latest: '已是最新版本',
+      later: '稍后',
+      ignore: '忽略此版本',
+      install: '下载并安装',
+      failed: '检查更新失败',
+      checking: '正在检查更新…',
+    }
+  }
+  return {
+    found: 'A new version is available',
+    latest: 'You are on the latest version',
+    later: 'Later',
+    ignore: 'Skip this version',
+    install: 'Download and install',
+    failed: 'Could not check for updates',
+    checking: 'Checking for updates…',
+  }
+}
+
+let updateDialogOpen = false
+
+function showUpdateAvailableDialog(info: UpdateInfo): void {
+  if (process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1' || updateDialogOpen) return
+  const copy = updateDialogCopy()
+  const notes = (info.notes ?? '').trim()
+  const detail = (notes === '' ? '' : notes.slice(0, 800) + (notes.length > 800 ? '…' : '') + '\n\n')
+    + 'v' + info.currentVersion + ' → v' + info.availableVersion
+  const options: Electron.MessageBoxOptions = {
+    type: 'info',
+    title: 'DeepSeek Harness Desktop',
+    message: copy.found + ' v' + info.availableVersion,
+    detail,
+    buttons: [copy.later, copy.ignore, copy.install],
+    defaultId: 2,
+    cancelId: 0,
+  }
+  const owner = mainWindow
+  const result = owner === null || owner.isDestroyed()
+    ? dialog.showMessageBox(options)
+    : dialog.showMessageBox(owner, options)
+  updateDialogOpen = true
+  void result.then(({ response }) => {
+    if (response === 1) {
+      desktopUpdater?.dismiss()
+      return
+    }
+    if (response === 2) void installDesktopUpdate().then((installed) => {
+      if (installed.started) scheduleQuitAfterWindowsInstall()
+    })
+  }).finally(() => { updateDialogOpen = false })
+}
+
+async function handleManualUpdateCheck(prompt: boolean): Promise<void> {
+  if (desktopUpdater === undefined) return
+  const busyPhase = desktopUpdater.getState().phase
+  if (busyPhase === 'downloading' || busyPhase === 'installing' || busyPhase === 'restartRequired') {
+    if (!prompt || process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1') return
+    const copy = updateDialogCopy()
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      title: 'DeepSeek Harness Desktop',
+      message: copy.checking,
+      buttons: ['OK'],
+    }
+    const owner = mainWindow
+    if (owner === null || owner.isDestroyed()) void dialog.showMessageBox(options)
+    else void dialog.showMessageBox(owner, options)
+    return
+  }
+  desktopUpdater.resetDismiss()
+  const result = await desktopUpdater.check()
+  if (!prompt || process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1') return
+  const copy = updateDialogCopy()
+  if (result.hasUpdate) {
+    showUpdateAvailableDialog(result.info)
+    return
+  }
+  const state = desktopUpdater.getState()
+  const options: Electron.MessageBoxOptions = {
+    type: state.phase === 'error' ? 'error' : 'info',
+    title: 'DeepSeek Harness Desktop',
+    message: state.phase === 'error' ? copy.failed : copy.latest,
+    ...state.error !== null && { detail: state.error },
+    buttons: ['OK'],
+  }
+  const owner = mainWindow
+  if (owner === null || owner.isDestroyed()) {
+    void dialog.showMessageBox(options)
+    return
+  }
+  void dialog.showMessageBox(owner, options)
+}
+
+function scheduleQuitAfterWindowsInstall(): void {
+  if (process.platform !== 'win32' || process.env.DSH_DESKTOP_UPDATE_DRY_RUN === '1') return
+  setTimeout(() => { app.quit() }, 400).unref()
+}
+
+async function installDesktopUpdate(): Promise<{ started: boolean; error?: string }> {
+  if (desktopUpdater === undefined) return { started: false, error: 'updater not ready' }
+  const result = await desktopUpdater.install()
+  if (result.started && process.platform === 'darwin' && process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT !== '1') {
+    const chinese = localeChinese()
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      title: 'DeepSeek Harness Desktop',
+      message: chinese ? '已打开新版本安装镜像' : 'The new installer image is open',
+      detail: chinese
+        ? '请将应用拖到「应用程序」文件夹替换旧版本，然后重新打开。'
+        : 'Drag the app to Applications to replace the current copy, then reopen it.',
+      buttons: ['OK'],
+    }
+    const owner = mainWindow
+    if (owner === null || owner.isDestroyed()) void dialog.showMessageBox(options)
+    else void dialog.showMessageBox(owner, options)
+  }
+  return result
+}
+
+function scheduleAutoUpdateCheck(): void {
+  if (desktopUpdater === undefined || !desktopUpdater.shouldAutoCheck()) return
+  setTimeout(() => {
+    const updater = desktopUpdater
+    if (quitting || updater === undefined) return
+    void updater.check().then((result) => {
+      if (!result.hasUpdate || updater.getState().dismissed) return
+      showUpdateAvailableDialog(result.info)
+    })
+  }, AUTO_CHECK_DELAY_MS).unref()
+}
+
+function jsonHeaders(): Record<string, string> {
+  return { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' }
+}
+
+function writeJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, jsonHeaders())
+  res.end(JSON.stringify(body))
+}
+
 /** Behavior for the loopback connection-settings page, served under the same origin. */
 const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
+  + 'function renderUpdate(u){if(!u)return;'
+  + 'const busy=u.phase==="checking"||u.phase==="downloading"||u.phase==="installing";'
+  + '$("update-check").disabled=busy;$("update-install").disabled=busy;'
+  + 'const has=u.phase==="available"&&u.info;$("update-install").hidden=!has||busy||u.phase==="installing";'
+  + '$("update-dismiss").hidden=!has||u.dismissed||busy;'
+  + 'let line="当前版本 v"+u.currentVersion;'
+  + 'if(u.phase==="checking")line+=" · 正在检查…";'
+  + 'else if(u.phase==="upToDate")line+=" · 已是最新版本";'
+  + 'else if(u.phase==="available"&&u.info)line+=" · 发现 v"+u.info.availableVersion;'
+  + 'else if(u.phase==="downloading")line+=" · 下载中 "+((u.progress&&u.progress.percent)||0)+"%";'
+  + 'else if(u.phase==="installing")line+=" · 正在启动安装程序";'
+  + 'else if(u.phase==="restartRequired")line+=" · 请安装后重新打开";'
+  + 'else if(u.phase==="error")line+=" · "+(u.error||"更新失败");'
+  + '$("update-status").textContent=line;'
+  + '$("update-notes").textContent=(u.info&&u.info.notes)||"";}'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
   + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
   + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
   + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用");'
   + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";'
   + '$("switch").hidden=!s.canSwitch;$("switch").textContent=s.selectedMode==="connect"?"切换到本地":"切换到远程";'
+  + 'renderUpdate(await(await fetch("desktop/update")).json());'
   + '}catch(e){$("status").textContent="状态不可用"}}'
   + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
   + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
@@ -878,7 +1148,11 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + '$("note").textContent=j.switched?"正在切换…":("切换失败："+(j.error||"未知错误"));if(!j.switched)$("switch").disabled=false;'
   + 'if(j.switched)setTimeout(()=>window.close(),500);'
   + '}catch(e){$("note").textContent="切换失败："+e.message;$("switch").disabled=false}};'
+  + '$("update-check").onclick=async()=>{try{$("update-check").disabled=true;const r=await fetch("desktop/update/check",{method:"POST"});renderUpdate((await r.json()).state)}catch(e){$("update-status").textContent="检查失败："+e.message}};'
+  + '$("update-install").onclick=async()=>{try{$("update-install").disabled=true;const r=await fetch("desktop/update/install",{method:"POST"});const j=await r.json();if(j.state)renderUpdate(j.state);if(!j.started)$("update-status").textContent="安装失败："+(j.error||"未知错误")}catch(e){$("update-status").textContent="安装失败："+e.message}};'
+  + '$("update-dismiss").onclick=async()=>{await fetch("desktop/update/dismiss",{method:"POST"});renderUpdate(await(await fetch("desktop/update")).json())};'
   + '$("close").onclick=()=>window.close();refresh();'
+  + 'setInterval(async()=>{try{const u=await(await fetch("desktop/update")).json();if(u.phase==="downloading"||u.phase==="installing")renderUpdate(u)}catch(e){}},400);'
 
 /** The connection-settings page (self-contained except for its same-origin script). */
 function settingsPageHtml(): string {
@@ -889,7 +1163,9 @@ function settingsPageHtml(): string {
     + 'h1{font-size:16px;margin:0 0 12px}p{color:#666;margin:8px 0}label{display:block;margin:10px 0 4px;font-size:13px;color:#666}'
     + 'input{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #d8d8d4;border-radius:8px;font:inherit}'
     + 'button{margin-top:14px;padding:7px 14px;border:1px solid #d8d8d4;border-radius:8px;background:#fff;font:inherit;cursor:pointer}'
-    + 'button.primary{background:#1c1c1c;color:#fff;border-color:#1c1c1c;margin-right:8px}</style></head><body>'
+    + 'button.primary{background:#1c1c1c;color:#fff;border-color:#1c1c1c;margin-right:8px}'
+    + 'hr{border:none;border-top:1px solid #ecece8;margin:20px 0 16px}'
+    + 'h2{font-size:14px;margin:0 0 8px}#update-notes{white-space:pre-wrap;max-height:90px;overflow:auto}</style></head><body>'
     + '<h1>Web UI 连接</h1>'
     + '<p id="status">读取状态…</p>'
     + '<p id="versions"></p>'
@@ -897,6 +1173,11 @@ function settingsPageHtml(): string {
     + '<input id="url" placeholder="http://127.0.0.1:3080" spellcheck="false">'
     + '<div><button id="switch" class="primary" hidden>切换连接</button><button id="save">保存并重连</button><button id="close">关闭</button></div>'
     + '<p id="note"></p>'
+    + '<hr><h2>应用更新</h2><p id="update-status">读取更新状态…</p>'
+    + '<div><button id="update-check">检查更新</button>'
+    + '<button id="update-install" class="primary" hidden>下载并安装</button>'
+    + '<button id="update-dismiss" hidden>稍后提醒</button></div>'
+    + '<p id="update-notes"></p>'
     + '<script src="desktop/settings.js"></script></body></html>'
 }
 
@@ -986,16 +1267,14 @@ function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?
   try {
     const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
     if (raw === '') {
-      const next: ClientSettings = { connectionMode: 'smart' }
-      saveSettings(next)
-      applyConnectionSettings(next)
+      patchSettings({ connectionMode: 'smart' }, ['serverUrl'])
+      applyConnectionSettings(loadSettings())
       return { saved: true }
     }
     const explicit = normalizeServerUrl(raw)
     if (explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
-    const next: ClientSettings = { serverUrl: explicit, connectionMode: 'connect' }
-    saveSettings(next)
-    applyConnectionSettings(next)
+    patchSettings({ serverUrl: explicit, connectionMode: 'connect' })
+    applyConnectionSettings(loadSettings())
     return { saved: true }
   } catch (error) {
     return { saved: false, error: error instanceof Error ? error.message : String(error) }
@@ -1009,9 +1288,8 @@ function switchConnectionMode(): { switched: boolean; mode?: 'smart' | 'connect'
     const explicit = normalizeServerUrl(current.serverUrl)
     if (explicit === undefined) return { switched: false, error: '请先保存远程 Web UI 地址' }
     const mode = usesConfiguredServer(current) ? 'smart' : 'connect'
-    const next: ClientSettings = { serverUrl: explicit, connectionMode: mode }
-    saveSettings(next)
-    applyConnectionSettings(next)
+    patchSettings({ serverUrl: explicit, connectionMode: mode })
+    applyConnectionSettings(loadSettings())
     return { switched: true, mode }
   } catch (error) {
     return { switched: false, error: error instanceof Error ? error.message : String(error) }
@@ -1063,6 +1341,10 @@ function installMenu(): void {
       label: app.name,
       submenu: [
         { role: 'about' as const },
+        {
+          label: '检查更新…',
+          click: () => { void handleManualUpdateCheck(true) },
+        },
         { type: 'separator' as const },
         { role: 'hide' as const },
         { role: 'hideOthers' as const },
@@ -1089,8 +1371,34 @@ function startSettingsServer(): Promise<number> {
     }
     const pathname = '/' + url.pathname.slice(settingsServerPath.length)
     if (pathname === '/desktop/status') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
-      res.end(JSON.stringify(getStatusJson()))
+      writeJson(res, 200, getStatusJson())
+      return
+    }
+    if (pathname === '/desktop/update') {
+      writeJson(res, 200, desktopUpdater?.getState() ?? { phase: 'idle', currentVersion: desktopClientVersion(), info: null, progress: null, error: 'updater not ready', dismissed: false, isChecking: false })
+      return
+    }
+    if (pathname === '/desktop/update/check' && req.method === 'POST') {
+      if (desktopUpdater === undefined) {
+        writeJson(res, 503, { hasUpdate: false, error: 'updater not ready' })
+        return
+      }
+      desktopUpdater.resetDismiss()
+      void desktopUpdater.check().then((result) => {
+        writeJson(res, 200, { ...result, state: desktopUpdater?.getState() })
+      })
+      return
+    }
+    if (pathname === '/desktop/update/install' && req.method === 'POST') {
+      void installDesktopUpdate().then((result) => {
+        writeJson(res, result.started ? 200 : 400, { ...result, state: desktopUpdater?.getState() })
+        if (result.started) scheduleQuitAfterWindowsInstall()
+      })
+      return
+    }
+    if (pathname === '/desktop/update/dismiss' && req.method === 'POST') {
+      desktopUpdater?.dismiss()
+      writeJson(res, 200, desktopUpdater?.getState() ?? { dismissed: true })
       return
     }
     if (pathname === '/desktop/settings.js') {
@@ -1273,6 +1581,8 @@ if (!gotLock) {
     mainWindowRequested = true
     createWindow()
     const guiPathReady = restoreMacGuiPath()
+    desktopUpdater = createDesktopUpdater()
+    desktopUpdater.onChange(broadcastUpdateState)
     await startSettingsServer()
     installMenu()
     createTray()
@@ -1286,8 +1596,20 @@ if (!gotLock) {
     })
     ipcMain.handle('desktop:connection:switch', () => switchConnectionMode())
     ipcMain.on('desktop:open-connection-settings', () => { openSettingsWindow() })
+    ipcMain.handle('desktop:update:status', () => desktopUpdater?.getState())
+    ipcMain.handle('desktop:update:check', () => {
+      desktopUpdater?.resetDismiss()
+      return desktopUpdater?.check() ?? { hasUpdate: false }
+    })
+    ipcMain.handle('desktop:update:install', async () => {
+      const result = await installDesktopUpdate()
+      if (result.started) scheduleQuitAfterWindowsInstall()
+      return result
+    })
+    ipcMain.handle('desktop:update:dismiss', () => { desktopUpdater?.dismiss() })
     await guiPathReady
     boot()
+    scheduleAutoUpdateCheck()
     app.on('activate', () => {
       if (mainWindow === null) launchWindow()
     })

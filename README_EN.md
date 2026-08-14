@@ -132,6 +132,7 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 - Closing the main window keeps the app available in the system tray/menu bar.
 - Reopen the window from the tray icon.
 - Quit from the tray menu, application menu, or `Cmd+Q` on macOS.
+- Packaged builds check GitHub Releases for a newer version a few seconds after launch (at most once every 12 hours). You can also check from **Settings → General → App updates**, the tray menu, or the macOS application menu. After you confirm, the client downloads the installer, verifies its SHA-256, and launches it. Unpackaged development builds do not auto-check.
 - If the official `127.0.0.1:3080` instance reused by Smart mode disappears, the client falls back to its managed local `dsh web`. A failed fixed remote connection never switches to a local service implicitly.
 - If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
 - If the page is unexpectedly blank after system resume or a long idle, the client verifies the Web UI and reloads it automatically.
@@ -146,6 +147,7 @@ pnpm run check:picker   # verify the bundled Win32 picker compatibility patch
 pnpm run dist           # build packages for the current platform
 pnpm run typecheck      # TypeScript validation
 pnpm run lint           # source and script linting
+pnpm run check:updater  # verify in-app update check, hash, and dismiss
 pnpm run audit          # boot and browser-surface smoke test
 pnpm run smoke:package  # prove the packaged app uses its bundled dsh runtime
 pnpm run shot           # refresh screenshots in shots/
@@ -153,7 +155,7 @@ pnpm run shot:readme    # refresh the privacy-safe README screenshots
 pnpm run e2e            # send a real prompt and verify the streamed response
 ```
 
-`pnpm run e2e` needs a valid API key. The production window loads the official Web UI; this repository does not maintain a second product renderer.
+`pnpm run e2e` needs a valid API key. The production window loads the official Web UI; this repository does not maintain a second product renderer. `pnpm run check:updater` drives a local update-feed fixture through check, hash verification, and dismiss.
 
 For the process model, trust boundary, and design decisions, see [Desktop client architecture](docs/desktop-client-architecture.md).
 
@@ -174,11 +176,11 @@ GitHub Actions validates the tag format, uses the tag as the release version, th
 
 Linux packages are temporarily outside the automated release scope; the source-level cross-platform compatibility code remains in place.
 
-After every platform succeeds, the workflow generates SHA-256 checksums and creates or updates the matching GitHub Release. Tags containing prerelease identifiers such as `-rc` or `-beta` are marked as prereleases automatically.
+After every platform succeeds, the workflow generates SHA-256 checksums and `latest.json` for the in-app updater, then creates or updates the matching GitHub Release. Tags containing prerelease identifiers such as `-rc` or `-beta` are marked as prereleases automatically and do not become the `/releases/latest` update feed.
 
 ## Project status
 
-The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
+The desktop shell, Smart/Connect modes, shared `DSH_HOME`, tray behavior, runtime supervision, in-app updates, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
 
 Contributions and issue reports are welcome, especially around Windows behavior, remote connections, and packaging.
 

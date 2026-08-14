@@ -308,6 +308,12 @@ jobs:
       IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
 
     steps:
+      - name: 检出更新清单脚本 / Checkout update-feed script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          sparse-checkout: scripts/write-update-feed.mjs
+
       - name: 下载 Release 资产 / Download release assets
         shell: bash
         run: |
@@ -320,11 +326,26 @@ jobs:
         run: |
           set -euo pipefail
           cd assets
-          rm -f SHA256SUMS.txt
-          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\0' \
+          rm -f SHA256SUMS.txt latest.json
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt ! -name latest.json ! -name release-notes.md -printf '%P\0' \
             | sort -z \
             | xargs -0 -r sha256sum > SHA256SUMS.txt
           gh release upload "$RELEASE_TAG" SHA256SUMS.txt --clobber
+
+      - name: 生成并上传在线更新清单 / Generate and upload update feed
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json body -q .body > assets/release-notes.md
+          node scripts/write-update-feed.mjs \
+            --dir assets \
+            --version "$RELEASE_VERSION" \
+            --repo "$GH_REPO" \
+            --notes-file assets/release-notes.md \
+            --out assets/latest.json
+          gh release upload "$RELEASE_TAG" assets/latest.json --clobber
 
       - name: 将草稿转为正式发布 / Publish completed release
         shell: bash

@@ -57,6 +57,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   differentialPackage: false
 
-# Releases are assembled explicitly by GitHub Actions; electron-builder must
-# not infer an auto-update provider or generate update metadata.
+# Releases are assembled explicitly by GitHub Actions. The in-app updater
+# reads latest.json from the GitHub Release (see scripts/write-update-feed.mjs);
+# electron-builder must not infer its own publish provider or latest.yml.
 publish: null
