@@ -24,7 +24,7 @@ import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, shell, Tray } from 'electron'
 import {
   AUTO_CHECK_DELAY_MS,
   DesktopUpdater,
@@ -682,6 +682,135 @@ function updateLoadingStatus(chinese: string, english: string, state: 'busy' | '
   ).catch(() => {})
 }
 
+const WINDOW_BG_DARK = '#17181a'
+const WINDOW_BG_LIGHT = '#FFFFFF'
+
+type AppearanceMode = 'system' | 'fixed'
+
+/** Last OS app-theme reading taken while themeSource was still following the system. */
+let osPrefersDark = nativeTheme.shouldUseDarkColors
+/** Official page paint, once the renderer has reported it. */
+let pagePrefersDark: boolean | undefined
+/** Official appearance control: pin only for an explicit light/dark choice. */
+let pageAppearanceMode: AppearanceMode | undefined
+/** themeSource writes emit 'updated'; ignore that echo so we do not loop. */
+let applyingThemeSource = false
+
+function effectiveWindowDark(): boolean {
+  if (pageAppearanceMode === 'fixed') return pagePrefersDark ?? osPrefersDark
+  return osPrefersDark
+}
+
+function windowBackgroundColor(): string {
+  return effectiveWindowDark() ? WINDOW_BG_DARK : WINDOW_BG_LIGHT
+}
+
+function applyWindowBackground(window: BrowserWindow | null, dark: boolean): void {
+  if (window === null || window.isDestroyed()) return
+  window.setBackgroundColor(dark ? WINDOW_BG_DARK : WINDOW_BG_LIGHT)
+}
+
+function paintWindowBackgrounds(): void {
+  const dark = effectiveWindowDark()
+  applyWindowBackground(mainWindow, dark)
+  applyWindowBackground(settingsWindow, dark)
+}
+
+function refreshOsPrefersDark(): void {
+  if (nativeTheme.themeSource === 'system') osPrefersDark = nativeTheme.shouldUseDarkColors
+}
+
+/**
+ * Windows title bar follows Chromium's NativeTheme, not setBackgroundColor.
+ * Pin themeSource only when the official control is an explicit light/dark
+ * choice. "Follow system" must stay on 'system' so matchMedia still sees
+ * the real OS — comparing painted color to OS is how the previous pin
+ * wedged that mode.
+ */
+function syncThemeSource(): void {
+  const want: typeof nativeTheme.themeSource = pageAppearanceMode === 'fixed'
+    ? ((pagePrefersDark ?? osPrefersDark) ? 'dark' : 'light')
+    : 'system'
+  if (nativeTheme.themeSource === want) return
+  applyingThemeSource = true
+  nativeTheme.themeSource = want
+  setImmediate(() => {
+    applyingThemeSource = false
+    refreshOsPrefersDark()
+    paintWindowBackgrounds()
+    if (want !== 'system' || mainWindow === null || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send('desktop:theme:refresh')
+  })
+}
+
+function syncWindowBackgrounds(): void {
+  if (applyingThemeSource) return
+  refreshOsPrefersDark()
+  paintWindowBackgrounds()
+  syncThemeSource()
+}
+
+function onRendererTheme(event: Electron.IpcMainEvent, payload: unknown): void {
+  if (typeof payload !== 'object' || payload === null) return
+  const body = payload as { dark?: unknown; mode?: unknown }
+  if (typeof body.dark !== 'boolean') return
+  const mode: AppearanceMode = body.mode === 'fixed' ? 'fixed' : 'system'
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (window === mainWindow) {
+    pagePrefersDark = body.dark
+    pageAppearanceMode = mode
+    syncThemeSource()
+  }
+  applyWindowBackground(window, effectiveWindowDark())
+}
+
+/** Native right-click menu for page content: copy selection, edit fields, links, images. */
+function installPageContextMenu(contents: Electron.WebContents): void {
+  contents.on('context-menu', (_event, params) => {
+    if (contents.isDestroyed()) return
+    const chinese = localeChinese()
+    const template: Electron.MenuItemConstructorOptions[] = []
+    const addSeparator = (): void => {
+      if (template.length > 0 && template[template.length - 1]?.type !== 'separator') {
+        template.push({ type: 'separator' })
+      }
+    }
+    if (params.isEditable) {
+      template.push(
+        { label: chinese ? '撤销' : 'Undo', accelerator: 'CmdOrCtrl+Z', enabled: params.editFlags.canUndo, click: () => { contents.undo() } },
+        { label: chinese ? '重做' : 'Redo', accelerator: process.platform === 'darwin' ? 'Shift+CmdOrCtrl+Z' : 'CmdOrCtrl+Y', enabled: params.editFlags.canRedo, click: () => { contents.redo() } },
+        { type: 'separator' },
+        { label: chinese ? '剪切' : 'Cut', accelerator: 'CmdOrCtrl+X', enabled: params.editFlags.canCut, click: () => { contents.cut() } },
+        { label: chinese ? '复制' : 'Copy', accelerator: 'CmdOrCtrl+C', enabled: params.editFlags.canCopy, click: () => { contents.copy() } },
+        { label: chinese ? '粘贴' : 'Paste', accelerator: 'CmdOrCtrl+V', enabled: params.editFlags.canPaste, click: () => { contents.paste() } },
+        { label: chinese ? '全选' : 'Select All', accelerator: 'CmdOrCtrl+A', enabled: params.editFlags.canSelectAll, click: () => { contents.selectAll() } },
+      )
+    } else {
+      template.push(
+        { label: chinese ? '复制' : 'Copy', accelerator: 'CmdOrCtrl+C', enabled: params.editFlags.canCopy, click: () => { contents.copy() } },
+        { label: chinese ? '全选' : 'Select All', accelerator: 'CmdOrCtrl+A', enabled: params.editFlags.canSelectAll, click: () => { contents.selectAll() } },
+      )
+    }
+    if (params.linkURL !== '') {
+      addSeparator()
+      template.push(
+        { label: chinese ? '打开链接' : 'Open Link', click: () => { openExternal(params.linkURL) } },
+        { label: chinese ? '复制链接' : 'Copy Link', click: () => { clipboard.writeText(params.linkURL) } },
+      )
+    }
+    if (params.mediaType === 'image') {
+      addSeparator()
+      template.push({
+        label: chinese ? '复制图片' : 'Copy Image',
+        click: () => { contents.copyImageAt(params.x, params.y) },
+      })
+    }
+    const window = BrowserWindow.fromWebContents(contents)
+    if (window === null || window.isDestroyed()) return
+    Menu.buildFromTemplate(template).popup({ window, x: params.x, y: params.y })
+  })
+}
+
 /** Create the client window immediately; the official Web UI replaces its loading surface when ready. */
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -690,7 +819,7 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 680,
     title: 'Harness',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: windowBackgroundColor(),
     // The official Web UI carries its own header; a hiddenInset title bar
     // would overlap it. The standard title bar keeps the traffic lights away
     // from the page on macOS and renders the official icon on Windows/Linux.
@@ -705,6 +834,7 @@ function createWindow(): void {
       preload: fileURLToPath(new URL('./preload.cjs', import.meta.url)),
     },
   })
+  installPageContextMenu(mainWindow.webContents)
   mainWindow.once('ready-to-show', () => { mainWindow?.show() })
   mainWindow.on('show', () => { scheduleWindowHealthCheck('window shown') })
   mainWindow.on('focus', () => { scheduleWindowHealthCheck('window focused') })
@@ -763,6 +893,8 @@ function createWindow(): void {
   })
   mainWindow.on('responsive', () => { rendererUnresponsive = false })
   loadingDocumentActive = true
+  pagePrefersDark = undefined
+  pageAppearanceMode = undefined
   void mainWindow.loadURL(loadingPageUrl()).catch(() => {})
 }
 
@@ -787,13 +919,14 @@ function openSettingsWindow(): void {
     resizable: true,
     minimizable: false,
     maximizable: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#17181a' : '#FFFFFF',
+    backgroundColor: windowBackgroundColor(),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
     },
   })
+  installPageContextMenu(settingsWindow.webContents)
   settingsWindow.on('closed', () => { settingsWindow = null })
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   settingsWindow.webContents.on('will-navigate', (event, targetUrl) => {
@@ -867,6 +1000,8 @@ function showLoadingDocument(): void {
   const window = mainWindow
   if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
   loadingDocumentActive = true
+  pagePrefersDark = undefined
+  pageAppearanceMode = undefined
   void window.loadURL(loadingPageUrl()).catch(() => {})
 }
 
@@ -1637,6 +1772,8 @@ if (!gotLock) {
     }
     // Paint immediately. Runtime probing/boot continues behind this one window
     // and replaces the loading document with the official Web UI when ready.
+    nativeTheme.on('updated', syncWindowBackgrounds)
+    ipcMain.on('desktop:theme', onRendererTheme)
     mainWindowRequested = true
     createWindow()
     const guiPathReady = restoreMacGuiPath()
