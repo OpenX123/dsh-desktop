@@ -65,6 +65,17 @@ const update = {
   dismiss: (): Promise<void> => ipcRenderer.invoke('desktop:update:dismiss') as Promise<void>,
 }
 
+/**
+ * Seats the client's OWN local documents use (the loading surface and the
+ * connection-failure surface). The main process accepts them only from those
+ * data: documents in the main window, so a remote page holding this same
+ * bridge cannot repoint the connection or end the application with them.
+ */
+const local = {
+  retry: (): void => { ipcRenderer.send('desktop:local:retry') },
+  quit: (): void => { ipcRenderer.send('desktop:local:quit') },
+}
+
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
   versions: {
@@ -74,6 +85,7 @@ contextBridge.exposeInMainWorld('desktop', {
   },
   connection,
   update,
+  local,
   /** Open the client's native connection-settings window (tray-era fallback). */
   openConnectionSettings: (): void => { ipcRenderer.send('desktop:open-connection-settings') },
 })

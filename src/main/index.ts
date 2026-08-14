@@ -39,7 +39,7 @@ const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 
 /** The client's own data home (connection settings only). */
 function clientHome(): string {
-  return process.env.DSH_DESKTOP_HOME ?? join(homedir(), '.dsh-desktop')
+  return devOverride('DSH_DESKTOP_HOME') ?? join(homedir(), '.dsh-desktop')
 }
 
 /**
@@ -48,7 +48,7 @@ function clientHome(): string {
  * and model configuration are the same everywhere. DSH_HOME overrides.
  */
 function childHome(): string {
-  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return devOverride('DSH_HOME') ?? join(homedir(), '.dsh')
 }
 
 /** The client's own settings document (connection configuration). */
@@ -156,12 +156,23 @@ function isSecureUpgrade(from: string, to: string): boolean {
  * Environment overrides are development seats. A packaged client must not be
  * steerable by ambient environment: a variable left by an installer, a login
  * script, or another application would otherwise redirect the spawned runtime,
- * the Smart-mode probe, or the update feed without the user ever seeing it.
+ * the Smart-mode probe, the data homes, or the update feed without the user
+ * ever seeing it — a planted DSH_DESKTOP_HOME is a planted settings.json, and
+ * that names the server the client connects to on every future launch.
  * DSH_DESKTOP_ALLOW_UNSAFE=1 keeps the escape hatch for deliberate debugging.
+ *
+ * Every DSH_* variable this file reads goes through here or `devFlag`, with
+ * one deliberate exception: DSH_DESKTOP_NODE is read on a branch a packaged
+ * build cannot reach (it throws on a missing bundled runtime first).
  */
 function devOverride(name: string): string | undefined {
   if (app.isPackaged && process.env.DSH_DESKTOP_ALLOW_UNSAFE !== '1') return undefined
   return process.env[name]
+}
+
+/** The `=1` test knobs, under the same packaging gate as `devOverride`. */
+function devFlag(name: string): boolean {
+  return devOverride(name) === '1'
 }
 
 /** Whether persisted settings currently select the reusable remote origin. */
@@ -189,7 +200,7 @@ function nodeForChild(): string {
  * startup, then merge only absolute path entries into the existing value.
  */
 async function restoreMacGuiPath(): Promise<void> {
-  if (process.platform !== 'darwin' || !app.isPackaged || process.env.DSH_DESKTOP_SKIP_LOGIN_PATH === '1') return
+  if (process.platform !== 'darwin' || !app.isPackaged || devFlag('DSH_DESKTOP_SKIP_LOGIN_PATH')) return
 
   const configuredShell = userInfo().shell
   const shellPath = typeof configuredShell === 'string' && isAbsolute(configuredShell) && existsSync(configuredShell)
@@ -514,6 +525,8 @@ let mainWindow: BrowserWindow | null = null
 let mainWindowRequested = false
 /** Whether the main window still shows the local loading document. */
 let loadingDocumentActive = false
+/** Whether the main window shows the local connection-failure document. */
+let errorDocumentActive = false
 let settingsWindow: BrowserWindow | null = null
 let settingsServerPort = 0
 /** Bearer-like unguessable path: loopback binding alone is not authorization. */
@@ -764,6 +777,277 @@ function updateLoadingStatus(chinese: string, english: string, state: 'busy' | '
   ).catch(() => {})
 }
 
+/** Escape untrusted text (an address, a server's status text) for the client's own documents. */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, char => (
+    char === '&' ? '&amp;' : char === '<' ? '&lt;' : char === '>' ? '&gt;' : char === '"' ? '&quot;' : '&#39;'
+  ))
+}
+
+/** One connection failure, in the terms the error surface needs to describe it. */
+type ConnectionFailure =
+  /** Chromium never got a document: DNS, refused, timeout, TLS. */
+  | { kind: 'load'; url: string; code: number; description: string }
+  /** A document arrived, but it is the server's error page, not the Web UI. */
+  | { kind: 'http'; url: string; status: number; statusText: string }
+  /** The local runtime itself could not run. */
+  | { kind: 'runtime'; headline: string; detail: string }
+
+/**
+ * Plain-language cause for a Chromium net error. The numbers are stable
+ * (net_error_list.h) and the user cannot be expected to know any of them; what
+ * they need is the one thing to change — scheme, port, certificate, network.
+ */
+function loadFailureHint(code: number, url: string, chinese: boolean): string {
+  const secure = url.startsWith('https://')
+  switch (code) {
+    // CERT_COMMON_NAME_INVALID / DATE_INVALID / AUTHORITY_INVALID / REVOKED /
+    // INVALID / WEAK_SIGNATURE_ALGORITHM / CERT_AUTHORITY_INVALID variants.
+    case -200: case -201: case -202: case -203: case -204: case -206: case -207: case -208: case -501:
+      return chinese
+        ? '服务器的 TLS 证书不被信任，自签名证书最常见。请为该地址配置受信任的证书，或改用已签发证书的地址。'
+        : 'The server’s TLS certificate is not trusted — a self-signed certificate is the usual cause. Install a trusted certificate for that address, or use one that already has one.'
+    case -105:
+      return chinese
+        ? '域名无法解析。请检查地址拼写，以及本机的 DNS 或 VPN。'
+        : 'The host name could not be resolved. Check the spelling, and this machine’s DNS or VPN.'
+    case -102:
+      return chinese
+        ? '目标端口没有服务在监听。请确认服务端已启动，端口正确且防火墙已放行。'
+        : 'Nothing is listening on that port. Check that the server is running, the port is right, and the firewall allows it.'
+    case -7: case -21: case -118:
+      return chinese
+        ? '连接超时。请检查网络、代理设置，以及服务端是否仍在运行。'
+        : 'The connection timed out. Check the network, any proxy, and whether the server is still running.'
+    case -100: case -101: case -107:
+      return secure
+        ? (chinese
+            ? '连接被中断。该端口可能并不提供 HTTPS，可尝试把地址改成 http://。'
+            : 'The connection was closed. That port may not speak HTTPS — try http:// instead.')
+        : (chinese
+            ? '连接被中断。该端口可能只接受 HTTPS，可尝试把地址改成 https://。'
+            : 'The connection was closed. That port may require HTTPS — try https:// instead.')
+    case -106:
+      return chinese ? '本机当前没有网络连接。' : 'This machine is offline.'
+    default:
+      return chinese
+        ? '请确认地址、端口与网络可达后重试，或在连接设置中换一个地址。'
+        : 'Check the address, the port, and network reachability, then retry — or set a different address in the connection settings.'
+  }
+}
+
+/**
+ * Plain-language cause for an HTTP status. The body behind such a status is
+ * the SERVER's error page (nginx's, typically), which is exactly what must not
+ * be handed to the user as if it were the app.
+ */
+function httpFailureHint(status: number, url: string, chinese: boolean): string {
+  if (!url.startsWith('https://') && (status === 400 || status === 426 || status === 497)) {
+    return chinese
+      ? '服务器按明文 HTTP 拒绝了这次请求，该端口很可能只接受 HTTPS。请把地址改成 https:// 后重试。'
+      : 'The server rejected the request as plaintext HTTP; that port most likely requires HTTPS. Change the address to https:// and retry.'
+  }
+  if (status === 401 || status === 403) {
+    return chinese
+      ? '服务器拒绝了这次访问。该地址可能需要登录，或不允许来自本机的请求。'
+      : 'The server refused the request. That address may require a sign-in, or may not allow requests from this machine.'
+  }
+  if (status === 404) {
+    return chinese
+      ? '该地址上没有 Web UI。请确认端口与路径是否正确。'
+      : 'There is no Web UI at that address. Check the port and the path.'
+  }
+  if (status >= 500) {
+    return chinese
+      ? '服务端返回了错误。请稍后重试，或检查服务端进程与反向代理的日志。'
+      : 'The server returned an error. Retry later, or check the server process and reverse-proxy logs.'
+  }
+  return chinese
+    ? '服务器返回的不是 Web UI 页面。请确认地址指向 dsh web 服务。'
+    : 'The server did not return the Web UI. Check that the address points at a dsh web service.'
+}
+
+/**
+ * The in-app connection-failure surface: the same visual language as the
+ * loading page and the connection window. It replaces a native message box on
+ * purpose — a modal dialog over an empty frame is the one thing a user cannot
+ * work with, and a server's own 4xx/5xx page is not an interface either.
+ */
+function errorPageUrl(copy: {
+  title: string
+  hint: string
+  addressLabel: string
+  address: string
+  reasonLabel: string
+  reason: string
+  retry: string
+  settings: string
+  quit: string
+}): string {
+  const chinese = localeChinese()
+  const fact = (label: string, value: string): string => value === ''
+    ? ''
+    : '<div class="fact"><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value.slice(0, 300)) + '</dd></div>'
+  const html = '<!doctype html><html lang="' + (chinese ? 'zh-CN' : 'en') + '"><head><meta charset="utf-8">'
+    + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'">'
+    + '<meta name="color-scheme" content="light dark"><title>' + escapeHtml(copy.title) + '</title><style>'
+    + ':root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}'
+    + '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff;color:#0f1115;padding:32px 24px}'
+    + 'main{width:min(420px,100%);text-align:center}'
+    + '.mark{width:64px;height:64px;border-radius:16px;box-shadow:0 12px 32px rgba(15,17,21,.14)}'
+    + 'h1{margin:22px 0 0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.01em}'
+    + '.hint{margin:10px 0 0;color:#6e7480;font-size:14px;line-height:22px}'
+    + '.facts{margin:22px 0 0;padding:12px 14px;text-align:left;border:1px solid #ebeef2;border-radius:12px;background:#fafbfc}'
+    + '.fact{display:flex;gap:12px;font-size:13px;line-height:20px}.fact+.fact{margin-top:8px}'
+    + 'dt{flex:0 0 auto;min-width:' + (chinese ? '32px' : '58px') + ';margin:0;color:#9aa0a6}'
+    + 'dd{margin:0;min-width:0;color:#0f1115;word-break:break-all}'
+    + '.actions{margin:24px 0 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}'
+    + 'button{white-space:nowrap;font:inherit;font-size:13px;font-weight:400;background:transparent;'
+    + 'border:1px solid #d8d8d4;border-radius:28px;padding:7px 18px;color:#0f1115;cursor:pointer;transition:background .15s ease,opacity .15s ease}'
+    + 'button:hover{background:#f5f6f7}'
+    + 'button.primary{background:#0f1115;border-color:#0f1115;color:#fff}button.primary:hover{opacity:.88;background:#0f1115}'
+    + 'button.ghost{border-color:transparent;color:#6e7480}'
+    + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}'
+    + '.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}.hint{color:#aeb3bb}'
+    + '.facts{border-color:#2c2e33;background:#1e1f22}dt{color:#818791}dd{color:#f4f5f6}'
+    + 'button{border-color:#3a3d42;color:#f4f5f6}button:hover{background:#232529}'
+    + 'button.primary{background:#f4f5f6;border-color:#f4f5f6;color:#17181a}button.primary:hover{opacity:.88;background:#f4f5f6}'
+    + 'button.ghost{border-color:transparent;color:#aeb3bb}}'
+    + '@media(prefers-reduced-motion:reduce){*{transition:none!important}}'
+    + '</style></head><body><main>' + loadingIconTag()
+    + '<h1>' + escapeHtml(copy.title) + '</h1>'
+    + '<p class="hint">' + escapeHtml(copy.hint) + '</p>'
+    + '<dl class="facts">' + fact(copy.addressLabel, copy.address) + fact(copy.reasonLabel, copy.reason) + '</dl>'
+    + '<div class="actions">'
+    + '<button id="error-retry" class="primary" type="button">' + escapeHtml(copy.retry) + '</button>'
+    + '<button id="error-settings" type="button">' + escapeHtml(copy.settings) + '</button>'
+    + '<button id="error-quit" class="ghost" type="button">' + escapeHtml(copy.quit) + '</button>'
+    + '</div></main></body></html>'
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
+}
+
+/**
+ * A failure raised while no window was open. This client is tray-resident, so
+ * closing the window during a slow startup leaves the app running with nothing
+ * to render into — and the runtime can fail after that. The failure waits here
+ * and takes over the next window instead of being lost.
+ */
+let pendingConnectionFailure: { failure: ConnectionFailure; generation: number } | undefined
+
+/**
+ * Show the failure surface in the main window. One at a time: a single
+ * navigation can raise both a load failure and a status, and the first
+ * description is the one that explains it. Retry clears the flag.
+ */
+function showConnectionError(failure: ConnectionFailure): void {
+  if (quitting) return
+  const window = mainWindow
+  if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) {
+    reportConnectionFailureWithoutWindow(failure)
+    return
+  }
+  if (errorDocumentActive) return
+  const chinese = localeChinese()
+  let title: string
+  let hint: string
+  let address = ''
+  let reason: string
+  if (failure.kind === 'runtime') {
+    title = failure.headline
+    reason = failure.detail
+    hint = chinese
+      ? '可以重试启动本地服务，或在连接设置中填写另一个可用的 Web UI 地址。'
+      : 'Retry the local service, or set a different Web UI address in the connection settings.'
+  } else if (failure.kind === 'http') {
+    title = chinese ? '无法打开 Web UI' : 'The Web UI did not load'
+    address = failure.url
+    reason = 'HTTP ' + String(failure.status) + (failure.statusText === '' ? '' : ' ' + failure.statusText)
+    hint = httpFailureHint(failure.status, failure.url, chinese)
+  } else {
+    title = chinese ? '无法连接 Web UI' : 'Could not reach the Web UI'
+    address = failure.url
+    reason = failure.description + ' (' + String(failure.code) + ')'
+    hint = loadFailureHint(failure.code, failure.url, chinese)
+  }
+
+  errorDocumentActive = true
+  loadingDocumentActive = false
+  pagePrefersDark = undefined
+  pageAppearanceMode = undefined
+  void window.loadURL(errorPageUrl({
+    title,
+    hint,
+    addressLabel: chinese ? '地址' : 'Address',
+    address,
+    reasonLabel: chinese ? '原因' : 'Reason',
+    reason,
+    retry: chinese ? '重试' : 'Retry',
+    settings: chinese ? '连接设置…' : 'Connection settings…',
+    quit: chinese ? '退出' : 'Quit',
+  })).then(() => {
+    if (window !== mainWindow || window.isDestroyed() || window.webContents.isDestroyed()) return
+    // The page's own CSP forbids inline script, so the seats are bound from
+    // here. onclick (not addEventListener) keeps repeat calls idempotent.
+    void window.webContents.executeJavaScript(
+      '(() => { const bind = (id, run) => { const b = document.getElementById(id); if (b !== null) b.onclick = run };'
+      + ' bind("error-retry", () => { window.desktop?.local?.retry?.() });'
+      + ' bind("error-settings", () => { window.desktop?.openConnectionSettings?.() });'
+      + ' bind("error-quit", () => { window.desktop?.local?.quit?.() }) })();',
+      true,
+    ).catch(() => {})
+  }, () => {})
+}
+
+/**
+ * The same failure, with no window to draw it in. An ownerless native dialog
+ * is the only surface left — this is what the pre-error-page code did for
+ * exactly this case, and dropping it made a tray-resident startup failure
+ * silent. Opening the window renders the real error surface, because the
+ * failure is held for it.
+ */
+function reportConnectionFailureWithoutWindow(failure: ConnectionFailure): void {
+  if (pendingConnectionFailure !== undefined) return
+  // Tagged with the attempt it describes. Any deliberate reconnection bumps
+  // the generation, which retires this failure rather than letting it take
+  // over the window the new attempt is opening.
+  pendingConnectionFailure = { failure, generation: connectionGeneration }
+  const chinese = localeChinese()
+  const detail = failure.kind === 'runtime'
+    ? failure.detail
+    : failure.url + '\n' + (failure.kind === 'http'
+      ? 'HTTP ' + String(failure.status) + (failure.statusText === '' ? '' : ' ' + failure.statusText)
+      : failure.description + ' (' + String(failure.code) + ')')
+  void dialog.showMessageBox({
+    type: 'error',
+    title: 'Harness',
+    message: failure.kind === 'runtime'
+      ? failure.headline
+      : (chinese ? '无法连接 Web UI' : 'Could not reach the Web UI'),
+    detail,
+    buttons: [
+      chinese ? '显示主窗口' : 'Show Window',
+      chinese ? '连接设置…' : 'Connection settings…',
+      chinese ? '退出' : 'Quit',
+    ],
+    defaultId: 0,
+    cancelId: 2,
+  }).then(({ response }) => {
+    if (response === 0) showMainWindow()
+    else if (response === 1) openSettingsWindow()
+    else app.quit()
+  }, () => {})
+}
+
+/** The failure surface's 重试: re-resolve the connection from the saved settings. */
+function retryConnection(): void {
+  if (quitting) return
+  errorDocumentActive = false
+  showLoadingDocument()
+  updateLoadingStatus('正在重新连接…', 'Reconnecting…')
+  resetRuntimeRecoveryBudget()
+  applyConnectionSettings(loadSettings(), true)
+}
+
 const WINDOW_BG_DARK = '#17181a'
 const WINDOW_BG_LIGHT = '#FFFFFF'
 
@@ -924,6 +1208,7 @@ function createWindow(): void {
     mainWindow = null
     mainWindowRequested = false
     loadingDocumentActive = false
+    errorDocumentActive = false
   })
   // The official Web UI is loaded; anything it tries to open elsewhere goes
   // to the system browser, and no new windows exist.
@@ -938,7 +1223,17 @@ function createWindow(): void {
   // desktop preload. Unknown target = deny: during startup and reconnection
   // there is no origin to be inside of.
   const guardNavigation = (event: Electron.Event, targetUrl: string): void => {
-    if (targetUrl.startsWith('data:')) return
+    // The client's own loading and failure surfaces are data: documents, and
+    // they arrive through loadURL, which emits no navigation event at all.
+    // Chromium already refuses a page-initiated top-level data: navigation, so
+    // this branch is a second lock on a door the engine keeps shut: allow only
+    // while one of those surfaces is the one on screen, and never hand a data:
+    // URL to the system browser.
+    if (targetUrl.startsWith('data:')) {
+      if (loadingDocumentActive || errorDocumentActive) return
+      event.preventDefault()
+      return
+    }
     const allowedTarget = currentTarget()
     if (allowedTarget !== undefined && appOrigin(targetUrl) === appOrigin(allowedTarget)) return
     // Follow the configured server's own HTTPS upgrade rather than bouncing
@@ -953,7 +1248,15 @@ function createWindow(): void {
     openExternal(targetUrl)
   }
   mainWindow.webContents.on('will-navigate', guardNavigation)
-  mainWindow.webContents.on('will-redirect', guardNavigation)
+  // will-navigate is main-frame only, but will-redirect fires for every frame.
+  // Guarding sub-frames would cancel an ordinary cross-origin 302 inside an
+  // iframe — an OAuth callback, an embedded preview — and pop the system
+  // browser for it. Only the top frame carries the preload, so only the top
+  // frame is what this guard is protecting.
+  mainWindow.webContents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
+    if (!isMainFrame) return
+    guardNavigation(event, targetUrl)
+  })
   // An unreachable Web UI (connect mode) must not strand the user: offer
   // retry or the connection-settings window.
   mainWindow.webContents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
@@ -964,17 +1267,21 @@ function createWindow(): void {
     }
     // A mode change can leave one late failure event from the old origin.
     if (appOrigin(failedUrl) !== appOrigin(currentTarget() ?? '')) return
-    void dialog.showMessageBox(mainWindow as BrowserWindow, {
-      type: 'error',
-      title: 'Harness',
-      message: '无法加载 Web UI',
-      detail: failedUrl + '\n' + String(code) + ': ' + description,
-      buttons: ['重试', '连接设置…', '退出'],
-    }).then(({ response }) => {
-      if (response === 0) void mainWindow?.webContents.reload()
-      else if (response === 1) openSettingsWindow()
-      else app.quit()
-    })
+    showConnectionError({ kind: 'load', url: failedUrl, code, description })
+  })
+  // A 4xx/5xx navigation is NOT a load failure to Chromium: the response has a
+  // body, so the window would otherwise display the server's own error page
+  // (an nginx "400 The plain HTTP request was sent to HTTPS port", say) as if
+  // it were the app, with no way back. The status is the failure.
+  mainWindow.webContents.on('did-navigate', (_event, url, httpResponseCode, httpStatusText) => {
+    if (quitting || url.startsWith('data:') || httpResponseCode < 400) return
+    const target = currentTarget()
+    if (target === undefined || appOrigin(url) !== appOrigin(target)) return
+    if (probeConnected) {
+      fallbackFromProbedInstance('http ' + String(httpResponseCode))
+      return
+    }
+    showConnectionError({ kind: 'http', url, status: httpResponseCode, statusText: httpStatusText })
   })
   // Chromium may lose its renderer after sleep or resource pressure without a
   // did-fail-load event. Reloading the surviving Web UI origin recreates it.
@@ -991,16 +1298,29 @@ function createWindow(): void {
   })
   mainWindow.on('responsive', () => { rendererUnresponsive = false })
   loadingDocumentActive = true
+  errorDocumentActive = false
   pagePrefersDark = undefined
   pageAppearanceMode = undefined
   void mainWindow.loadURL(loadingPageUrl()).catch(() => {})
 }
 
-/** Navigate the existing loading/client window to one official Web UI origin. */
-function loadMainWindow(url: string): void {
+/**
+ * Navigate the existing loading/client window to one official Web UI origin.
+ * `force` marks a reconnect the user explicitly asked for: startup resolves to
+ * the origin already on screen all the time and must not reload it, but
+ * "保存并重连" resolving to the same origin has to rebuild the session anyway —
+ * doing nothing leaves the card's "正在重连…" note true forever.
+ */
+function loadMainWindow(url: string, force = false): void {
   if (mainWindow === null) createWindow()
-  if (mainWindow === null || appOrigin(mainWindow.webContents.getURL()) === appOrigin(url)) return
+  if (mainWindow === null) return
+  if (appOrigin(mainWindow.webContents.getURL()) === appOrigin(url)) {
+    if (!force) return
+    mainWindow.webContents.reload()
+    return
+  }
   loadingDocumentActive = false
+  errorDocumentActive = false
   void mainWindow.loadURL(url).catch(() => { /* did-fail-load owns user recovery */ })
 }
 
@@ -1014,6 +1334,10 @@ function openSettingsWindow(): void {
     width: 480,
     height: 660,
     title: '连接设置',
+    // Without this the window keeps Electron's own default icon in its title
+    // bar and taskbar entry — the one place the client still looked like a
+    // generic Electron app.
+    icon: ICON_PNG,
     resizable: true,
     minimizable: false,
     maximizable: false,
@@ -1137,7 +1461,7 @@ function bridgeCaller(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent
     // The frame was destroyed between send and dispatch.
     return UNTRUSTED_CALLER
   }
-  if (frameUrl.startsWith('data:')) return { trusted: loadingDocumentActive, remote: false }
+  if (frameUrl.startsWith('data:')) return { trusted: loadingDocumentActive || errorDocumentActive, remote: false }
   const target = currentTarget()
   const origin = appOrigin(frameUrl)
   if (target === undefined || origin === '' || origin !== appOrigin(target)) return UNTRUSTED_CALLER
@@ -1148,11 +1472,32 @@ function bridgeDenied(): Error {
   return new Error('desktop bridge: sender is not the active Web UI')
 }
 
+/**
+ * Whether the sender is one of the client's OWN local documents — the data:
+ * loading and connection-failure surfaces in the main window. Reconnecting and
+ * quitting are reachable only from there: the same preload rides on a remote
+ * page in Connect mode, and that page has no business restarting the client's
+ * connection or ending the application.
+ */
+function localDocumentCaller(event: Electron.IpcMainEvent): boolean {
+  if (mainWindow === null || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false
+  if (!loadingDocumentActive && !errorDocumentActive) return false
+  try {
+    const frame = event.senderFrame
+    if (frame === null || frame.parent !== null) return false
+    return frame.url.startsWith('data:')
+  } catch {
+    // The frame was destroyed between send and dispatch.
+    return false
+  }
+}
+
 /** Replace the current page with the local startup surface before recovery. */
 function showLoadingDocument(): void {
   const window = mainWindow
   if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
   loadingDocumentActive = true
+  errorDocumentActive = false
   pagePrefersDark = undefined
   pageAppearanceMode = undefined
   void window.loadURL(loadingPageUrl()).catch(() => {})
@@ -1218,15 +1563,46 @@ function createDesktopUpdater(): DesktopUpdater {
     downloadDir: join(clientHome(), 'updates'),
     loadPersistence: loadUpdatePersistence,
     savePersistence: saveUpdatePersistence,
-    dryRun: process.env.DSH_DESKTOP_UPDATE_DRY_RUN === '1',
+    dryRun: devFlag('DSH_DESKTOP_UPDATE_DRY_RUN'),
   })
 }
 
 let lastTrayUpdateSignature = ''
 
+/**
+ * The update state as a remote page may see it. `error` is whatever the
+ * download, the SHA-256 check, or the installer threw, and those routinely
+ * name absolute paths on this machine; `phase` already tells the page that
+ * something failed, and the card falls back to its own wording when the
+ * reason is absent. Same rule as `getStatusJson`'s `includeLocalDetail`.
+ */
+function updateStateForCaller(state: UpdateState, remote: boolean): UpdateState {
+  if (!remote || state.error === null) return state
+  return { ...state, error: null }
+}
+
+/**
+ * Whether the document in the main window is a remote origin. The push channel
+ * has no sender to inspect, so it reads the URL actually loaded rather than the
+ * target the client is aiming at: during a mode switch the window still shows
+ * the old remote page after `currentTarget()` has already moved, and that page
+ * is the one about to receive the broadcast. The client's own data: surfaces
+ * carry no origin and are not remote.
+ */
+function mainWindowShowsRemote(): boolean {
+  if (mainWindow === null || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return false
+  const url = mainWindow.webContents.getURL()
+  // A data: document serializes its opaque origin as the string "null", not
+  // an empty one — spell that out rather than letting it fall through as an
+  // origin that merely fails the loopback test.
+  if (url === '' || url.startsWith('data:')) return false
+  const origin = appOrigin(url)
+  return origin !== '' && origin !== 'null' && !originIsLoopback(origin)
+}
+
 function broadcastUpdateState(state: UpdateState): void {
   if (mainWindow !== null && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('desktop:update:changed', state)
+    mainWindow.webContents.send('desktop:update:changed', updateStateForCaller(state, mainWindowShowsRemote()))
   }
   const signature = [
     state.phase,
@@ -1310,7 +1686,7 @@ async function confirmSensitiveAction(message: string, detail: string): Promise<
 let updateDialogOpen = false
 
 function showUpdateAvailableDialog(info: UpdateInfo): void {
-  if (process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1' || updateDialogOpen) return
+  if (devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT') || updateDialogOpen) return
   const copy = updateDialogCopy()
   const notes = (info.notes ?? '').trim()
   const detail = (notes === '' ? '' : notes.slice(0, 800) + (notes.length > 800 ? '…' : '') + '\n\n')
@@ -1344,7 +1720,7 @@ async function handleManualUpdateCheck(prompt: boolean): Promise<void> {
   if (desktopUpdater === undefined) return
   const busyPhase = desktopUpdater.getState().phase
   if (busyPhase === 'downloading' || busyPhase === 'installing' || busyPhase === 'restartRequired') {
-    if (!prompt || process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1') return
+    if (!prompt || devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) return
     const copy = updateDialogCopy()
     const options: Electron.MessageBoxOptions = {
       type: 'info',
@@ -1359,7 +1735,7 @@ async function handleManualUpdateCheck(prompt: boolean): Promise<void> {
   }
   desktopUpdater.resetDismiss()
   const result = await desktopUpdater.check()
-  if (!prompt || process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT === '1') return
+  if (!prompt || devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) return
   const copy = updateDialogCopy()
   if (result.hasUpdate) {
     showUpdateAvailableDialog(result.info)
@@ -1382,14 +1758,14 @@ async function handleManualUpdateCheck(prompt: boolean): Promise<void> {
 }
 
 function scheduleQuitAfterWindowsInstall(): void {
-  if (process.platform !== 'win32' || process.env.DSH_DESKTOP_UPDATE_DRY_RUN === '1') return
+  if (process.platform !== 'win32' || devFlag('DSH_DESKTOP_UPDATE_DRY_RUN')) return
   setTimeout(() => { app.quit() }, 400).unref()
 }
 
 async function installDesktopUpdate(): Promise<{ started: boolean; error?: string }> {
   if (desktopUpdater === undefined) return { started: false, error: 'updater not ready' }
   const result = await desktopUpdater.install()
-  if (result.started && process.platform === 'darwin' && process.env.DSH_DESKTOP_SKIP_UPDATE_PROMPT !== '1') {
+  if (result.started && process.platform === 'darwin' && !devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) {
     const chinese = localeChinese()
     const options: Electron.MessageBoxOptions = {
       type: 'info',
@@ -1554,22 +1930,22 @@ function settingsPageHtml(): string {
 }
 
 /** Connect to a fixed Web UI origin: stop any local child, point the window at it. */
-function connectTo(url: string): void {
+function connectTo(url: string, force = false): void {
   const generation = ++connectionGeneration
   if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
   configuredTarget = url
   probeConnected = false
   childTarget = undefined
   if (webUi !== undefined) void webUi.stop()
-  launchWindow(generation)
+  launchWindow(generation, force)
 }
 
 /** Use the local `dsh web` child (spawned on demand, awaited via readiness). */
-function startLocalRuntime(generation: number): void {
+function startLocalRuntime(generation: number, force = false): void {
   if (generation !== connectionGeneration || quitting) return
   configuredTarget = undefined
   probeConnected = false
-  launchWindow(generation)
+  launchWindow(generation, force)
 }
 
 /** Start a fresh bounded recovery window for an intentional local selection. */
@@ -1606,11 +1982,11 @@ function fallbackFromProbedInstance(reason: string): boolean {
 }
 
 /** Smart mode: prefer a locally running official instance, else launch our own. */
-function resolveRuntime(): void {
+function resolveRuntime(force = false): void {
   const generation = ++connectionGeneration
   resetRuntimeRecoveryBudget()
-  if (process.env.DSH_DESKTOP_SKIP_PROBE === '1') {
-    startLocalRuntime(generation)
+  if (devFlag('DSH_DESKTOP_SKIP_PROBE')) {
+    startLocalRuntime(generation, force)
     return
   }
   void probeWebUi(defaultWebProbeUrl()).then((probed) => {
@@ -1620,18 +1996,22 @@ function resolveRuntime(): void {
       probeConnected = true
       childTarget = undefined
       if (webUi !== undefined) void webUi.stop()
-      launchWindow(generation)
+      launchWindow(generation, force)
       return
     }
-    startLocalRuntime(generation)
+    startLocalRuntime(generation, force)
   })
 }
 
-/** Apply one persisted connection choice without changing its saved address. */
-function applyConnectionSettings(settings: ClientSettings): void {
+/**
+ * Apply one persisted connection choice without changing its saved address.
+ * `force` is set by the seats the user drives (save, switch, retry); startup
+ * leaves it off so the first paint is never a redundant reload.
+ */
+function applyConnectionSettings(settings: ClientSettings, force = false): void {
   const explicit = normalizeServerUrl(settings.serverUrl)
-  if (explicit !== undefined && usesConfiguredServer(settings)) connectTo(explicit)
-  else resolveRuntime()
+  if (explicit !== undefined && usesConfiguredServer(settings)) connectTo(explicit, force)
+  else resolveRuntime(force)
 }
 
 /** Save an address edit. A non-empty valid address becomes the active target. */
@@ -1640,13 +2020,13 @@ function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?
     const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
     if (raw === '') {
       patchSettings({ connectionMode: 'smart' }, ['serverUrl'])
-      applyConnectionSettings(loadSettings())
+      applyConnectionSettings(loadSettings(), true)
       return { saved: true }
     }
     const explicit = normalizeServerUrl(raw)
     if (explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
     patchSettings({ serverUrl: explicit, connectionMode: 'connect' })
-    applyConnectionSettings(loadSettings())
+    applyConnectionSettings(loadSettings(), true)
     return { saved: true }
   } catch (error) {
     return { saved: false, error: error instanceof Error ? error.message : String(error) }
@@ -1665,7 +2045,9 @@ async function requestServerUrlSave(serverUrl: unknown, remoteCaller: boolean): 
   const chinese = localeChinese()
   const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
   const explicit = raw === '' ? undefined : normalizeServerUrl(raw)
-  if (raw !== '' && explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
+  if (raw !== '' && explicit === undefined) {
+    return { saved: false, error: chinese ? '请输入有效的 HTTP 或 HTTPS 地址' : 'Enter a valid HTTP or HTTPS address' }
+  }
   const cancelled = { saved: false, error: chinese ? '已取消' : 'Cancelled' }
 
   if (remoteCaller) {
@@ -1700,7 +2082,7 @@ function switchConnectionMode(): { switched: boolean; mode?: 'smart' | 'connect'
     if (explicit === undefined) return { switched: false, error: '请先保存远程 Web UI 地址' }
     const mode = usesConfiguredServer(current) ? 'smart' : 'connect'
     patchSettings({ serverUrl: explicit, connectionMode: mode })
-    applyConnectionSettings(loadSettings())
+    applyConnectionSettings(loadSettings(), true)
     return { switched: true, mode }
   } catch (error) {
     return { switched: false, error: error instanceof Error ? error.message : String(error) }
@@ -1708,13 +2090,22 @@ function switchConnectionMode(): { switched: boolean; mode?: 'smart' | 'connect'
 }
 
 /** Open the window at the CURRENT target, waiting for local readiness if needed. */
-function launchWindow(generation = connectionGeneration): void {
+function launchWindow(generation = connectionGeneration, force = false): void {
   if (generation !== connectionGeneration || quitting) return
   mainWindowRequested = true
   if (mainWindow === null) createWindow()
+  // A failure that arrived while the window was closed owns this window: it is
+  // the real explanation, and its seats (retry, settings, quit) are live. A
+  // failure from a superseded attempt is stale — drop it and connect.
+  const held = pendingConnectionFailure
+  pendingConnectionFailure = undefined
+  if (held !== undefined && held.generation === generation) {
+    showConnectionError(held.failure)
+    return
+  }
   if (configuredTarget !== undefined) {
     updateLoadingStatus('正在连接 Web UI…', 'Connecting to the Web UI…')
-    loadMainWindow(configuredTarget)
+    loadMainWindow(configuredTarget, force)
     return
   }
   updateLoadingStatus('正在启动本地 dsh 服务…', 'Starting the local dsh service…')
@@ -1723,11 +2114,12 @@ function launchWindow(generation = connectionGeneration): void {
     console.log('[desktop] dsh runtime ready: ' + url)
     markLocalRuntimeReady(url)
     if (!mainWindowRequested) return
-    if (configuredTarget === undefined) loadMainWindow(url)
+    if (configuredTarget === undefined) loadMainWindow(url, force)
   }, () => {
-    // The first failure raised its dialog through onExit. A repeat request
-    // (dock activate, second instance) rejects without one, so the loading
-    // surface must carry the state instead of spinning forever.
+    // The first failure already took over this window through onExit — either
+    // as the error surface, or held and rendered above. A repeat request (dock
+    // activate, second instance) rejects without one, so the loading surface
+    // must carry the state instead of spinning forever.
     if (generation !== connectionGeneration || quitting) return
     updateLoadingStatus('本地服务启动失败。可在下方设置 Web UI 连接。',
       'The local service failed to start. Set the Web UI connection below.', 'failed')
@@ -1897,24 +2289,11 @@ function startSettingsServer(): Promise<number> {
 
 function showLocalRuntimeStartupFailure(code: number | null, signal: NodeJS.Signals | null): void {
   const reason = webUi?.lastError
-  updateLoadingStatus('本地服务启动失败。可在下方设置 Web UI 连接。',
-    'The local service failed to start. Set the Web UI connection below.', 'failed')
-  const options = {
-    type: 'error' as const,
-    title: 'Harness',
-    message: '本地服务无法启动',
-    detail: (reason !== null && reason !== undefined ? reason + '\n' : '')
-      + '运行结果：' + String(code) + ' / ' + String(signal) + '。\n'
-      + '请重新安装完整客户端，或在「Web UI 连接…」中填写另一个可用地址。',
-    buttons: ['Web UI 连接…', '退出'],
-    defaultId: 0,
-    cancelId: 1,
-  }
-  const owner = mainWindow
-  const result = owner === null ? dialog.showMessageBox(options) : dialog.showMessageBox(owner, options)
-  void result.then(({ response }) => {
-    if (response === 0) openSettingsWindow()
-    else app.quit()
+  const chinese = localeChinese()
+  showConnectionError({
+    kind: 'runtime',
+    headline: chinese ? '本地服务无法启动' : 'The local service could not start',
+    detail: (reason !== null && reason !== undefined ? reason + ' · ' : '') + String(code) + ' / ' + String(signal),
   })
 }
 
@@ -1966,18 +2345,16 @@ function boot(): void {
         showLocalRuntimeStartupFailure(code, signal)
         return
       }
-      // A live window lost its runtime: fatal.
+      // A live window lost its runtime, and the retry budget is spent. The
+      // surface stays interactive rather than quitting under the user: a
+      // deliberate retry (or another address) is still a way out.
       console.error('[desktop] dsh web exited (' + String(code) + '/' + String(signal) + ')')
-      const options: Electron.MessageBoxOptions = {
-        type: 'error',
-        title: 'Harness',
-        message: '运行时意外退出',
-        detail: '代码 ' + String(code) + ' / 信号 ' + String(signal) + '。',
-        buttons: ['退出'],
-      }
-      const owner = mainWindow
-      const result = owner === null ? dialog.showMessageBox(options) : dialog.showMessageBox(owner, options)
-      void result.then(() => { app.quit() })
+      const chinese = localeChinese()
+      showConnectionError({
+        kind: 'runtime',
+        headline: chinese ? '本地服务意外退出' : 'The local service exited unexpectedly',
+        detail: (chinese ? '代码 ' : 'code ') + String(code) + (chinese ? ' / 信号 ' : ' / signal ') + String(signal),
+      })
     },
   )
 
@@ -2067,9 +2444,19 @@ if (!gotLock) {
       if (!bridgeCaller(event).trusted) return
       openSettingsWindow()
     })
+    ipcMain.on('desktop:local:retry', (event) => {
+      if (!localDocumentCaller(event)) return
+      retryConnection()
+    })
+    ipcMain.on('desktop:local:quit', (event) => {
+      if (!localDocumentCaller(event)) return
+      app.quit()
+    })
     ipcMain.handle('desktop:update:status', (event) => {
-      if (!bridgeCaller(event).trusted) throw bridgeDenied()
-      return desktopUpdater?.getState()
+      const caller = bridgeCaller(event)
+      if (!caller.trusted) throw bridgeDenied()
+      const state = desktopUpdater?.getState()
+      return state === undefined ? undefined : updateStateForCaller(state, caller.remote)
     })
     ipcMain.handle('desktop:update:check', (event) => {
       if (!bridgeCaller(event).trusted) throw bridgeDenied()
@@ -2079,10 +2466,10 @@ if (!gotLock) {
     ipcMain.handle('desktop:update:install', async (event) => {
       const caller = bridgeCaller(event)
       if (!caller.trusted) throw bridgeDenied()
+      const chinese = localeChinese()
       // Installing runs an executable this machine downloaded. A remote page
       // may ask; only the person at the keyboard may answer.
       if (caller.remote) {
-        const chinese = localeChinese()
         const confirmed = await confirmSensitiveAction(
           chinese ? '当前页面请求下载并安装更新' : 'The current page asked to download and install an update',
           (chinese ? '安装程序会在本机运行。请求来自：' : 'The installer will run on this machine. Requested by: ')
@@ -2092,6 +2479,11 @@ if (!gotLock) {
       }
       const result = await installDesktopUpdate()
       if (result.started) scheduleQuitAfterWindowsInstall()
+      // The failure reason names local paths for the same reasons the status
+      // does; a remote caller learns that it failed, not where.
+      if (!result.started && caller.remote && result.error !== undefined) {
+        return { started: false, error: chinese ? '更新失败' : 'Update failed' }
+      }
       return result
     })
     ipcMain.handle('desktop:update:dismiss', (event) => {

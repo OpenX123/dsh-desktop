@@ -1,0 +1,122 @@
+/**
+ * Connection-failure surface check. A configured server that answers 400 with
+ * its OWN error page (the nginx "plain HTTP request was sent to HTTPS port"
+ * case) must never be shown as if it were the app: the window has to carry the
+ * client's failure surface, with a cause line and a way out.
+ * Usage: node scripts/check-error-surface.mjs
+ * @module desktop/scripts/check-error-surface
+ */
+
+import { createServer } from 'node:http'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { _electron as electron } from 'playwright-core'
+
+const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
+const checkHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-error-surface-'))
+const desktopHome = join(checkHome, 'desktop')
+mkdirSync(desktopHome, { recursive: true })
+
+const badServer = createServer((req, res) => {
+  res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+  res.end('<html><head><title>400 The plain HTTP request was sent to HTTPS port</title></head>'
+    + '<body><center><h1>400 Bad Request</h1></center>'
+    + '<center>The plain HTTP request was sent to HTTPS port</center>'
+    + '<hr><center>nginx/1.24.0 (Ubuntu)</center></body></html>')
+})
+await new Promise((resolve, reject) => {
+  badServer.once('error', reject)
+  badServer.listen(0, '127.0.0.1', resolve)
+})
+const address = badServer.address()
+if (typeof address !== 'object' || address === null) throw new Error('fixture did not bind')
+const origin = 'http://127.0.0.1:' + String(address.port)
+writeFileSync(join(desktopHome, 'settings.json'),
+  JSON.stringify({ serverUrl: origin, connectionMode: 'connect' }, null, 2) + '\n')
+
+const electronEnv = { ...process.env }
+Reflect.deleteProperty(electronEnv, 'ELECTRON_RUN_AS_NODE')
+electronEnv.DSH_HOME = join(checkHome, 'dsh')
+electronEnv.DSH_DESKTOP_HOME = desktopHome
+electronEnv.DSH_DESKTOP_SKIP_PROBE = '1'
+electronEnv.DSH_DESKTOP_SKIP_UPDATE_PROMPT = '1'
+
+let failed = false
+const check = (name, ok, detail) => {
+  console.log((ok ? '✓ ' : '✗ ') + name + (detail === undefined ? '' : ' — ' + detail))
+  if (!ok) failed = true
+}
+
+let app
+try {
+  app = await electron.launch({
+    args: [join(APP_DIR, '.build', 'main.mjs'), '--user-data-dir=' + join(checkHome, 'chromium')],
+    env: electronEnv,
+  })
+  const window = await app.firstWindow()
+  await window.waitForSelector('#error-retry', { timeout: 20_000 })
+
+  const title = await window.title()
+  check('the server error page never reaches the window', !/400/.test(title), title)
+  check('the failure is named', (await window.locator('h1').innerText()).length > 0)
+  const hint = await window.locator('.hint').innerText()
+  check('the cause line points at HTTPS', /https:\/\//.test(hint), hint)
+  const facts = await window.locator('.fact').allInnerTexts()
+  check('address and reason are shown', facts.length === 2, JSON.stringify(facts))
+  const buttons = await window.locator('.actions button').allInnerTexts()
+  check('retry / settings / quit are offered', buttons.length === 3, JSON.stringify(buttons))
+  // The buttons are in the document as soon as it parses, but their handlers
+  // are assigned from the main process after loadURL settles. Asserting on
+  // sight races that round trip — and an unbound button also makes the click
+  // below do nothing. Wait for the binding rather than assume it has landed.
+  const seats = () => [
+    typeof document.getElementById('error-retry')?.onclick,
+    typeof document.getElementById('error-settings')?.onclick,
+    typeof document.getElementById('error-quit')?.onclick,
+  ].join(',')
+  const bound = await window.waitForFunction(
+    () => [
+      document.getElementById('error-retry')?.onclick,
+      document.getElementById('error-settings')?.onclick,
+      document.getElementById('error-quit')?.onclick,
+    ].every(handler => typeof handler === 'function'),
+    { timeout: 10_000 },
+  ).then(() => 'function,function,function', () => window.evaluate(seats))
+  check('every seat is bound', bound === 'function,function,function', bound)
+
+  // The settings seat is the only way back when there is no page to carry the
+  // official dialog's enhanced 连接 block.
+  await window.locator('#error-settings').click()
+  const settings = await app.waitForEvent('window', { timeout: 10_000 }).catch(() => null)
+  check('the settings seat opens the connection window',
+    settings !== null && (await settings.locator('.page-title').innerText()) === '连接设置')
+  await settings?.close().catch(() => {})
+
+  // Retry must re-run the connection rather than stall on the loading
+  // document — and a server that is now gone entirely is the other failure
+  // family (no document at all), which the same surface has to carry.
+  await new Promise(resolve => badServer.close(resolve))
+  await window.locator('#error-retry').click()
+  // Match the reason cell, not the whole block: the address cell carries a
+  // randomly bound port, and a port that happens to contain the error number
+  // would satisfy a whole-block test before the retry has produced anything —
+  // passing the check by masking the failure it exists to catch. The named
+  // constant rather than the number, for the same reason.
+  const refused = await window.waitForFunction(
+    () => (document.querySelectorAll('.fact')[1]?.textContent ?? '').includes('ERR_CONNECTION_REFUSED'),
+    { timeout: 30_000 },
+  ).then(() => true, () => false)
+  check('retry reports the next failure (connection refused)', refused,
+    (await window.locator('.facts').innerText()).replace(/\n/g, ' | '))
+} catch (error) {
+  check('run', false, error instanceof Error ? error.message : String(error))
+} finally {
+  await app?.close().catch(() => {})
+  if (badServer.listening) await new Promise(resolve => badServer.close(resolve))
+  rmSync(checkHome, { recursive: true, force: true })
+}
+
+process.exit(failed ? 1 : 0)

@@ -26,8 +26,14 @@ const probeServer = createServer((req, res) => {
     res.end(JSON.stringify({ result: { ok: true } }))
     return
   }
+  // Plain by design (nothing is injected here), but legible enough that a
+  // watched run does not look like a broken page.
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  res.end('<!doctype html><html><head><title>Probed Harness Fixture</title></head><body>probed fixture</body></html>')
+  res.end('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Probed Harness Fixture</title>'
+    + '<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eceef1;color:#6e7480;'
+    + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px}'
+    + 'p{margin:0;padding:14px 22px;border-radius:12px;background:#fff;box-shadow:0 12px 32px rgba(15,17,21,.12)}</style>'
+    + '</head><body><p>probed fixture</p></body></html>')
 })
 await new Promise((resolve, reject) => {
   probeServer.once('error', reject)

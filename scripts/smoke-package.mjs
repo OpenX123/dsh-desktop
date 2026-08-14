@@ -73,9 +73,16 @@ for (const [key, value] of Object.entries(process.env)) {
   if (upper === 'PATH' || upper === 'ELECTRON_RUN_AS_NODE' || upper === 'DSH_DESKTOP_SKIP_LOGIN_PATH') continue
   childEnv[key] = value
 }
+// This is the one caller that runs a PACKAGED build, where every DSH_* override
+// is ignored by design — the whole point of that gate is that a stray variable
+// cannot move a real user's data home or skip their probe. The sandboxed homes
+// below are what keeps this smoke off the developer's own ~/.dsh, so it opens
+// the documented escape hatch deliberately rather than writing to the real one.
+// The trade: this run does not exercise the packaged default of ignoring them.
 const child = spawn(executable, ['--user-data-dir=' + join(smokeHome, 'chromium')], {
   env: {
     ...childEnv,
+    DSH_DESKTOP_ALLOW_UNSAFE: '1',
     DSH_HOME: join(smokeHome, 'dsh'),
     DSH_DESKTOP_HOME: join(smokeHome, 'desktop'),
     DSH_DESKTOP_SKIP_PROBE: '1',

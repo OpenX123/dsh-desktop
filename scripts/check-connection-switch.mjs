@@ -17,16 +17,67 @@ const checkHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-connection-'))
 const desktopHome = join(checkHome, 'desktop')
 mkdirSync(desktopHome, { recursive: true })
 
+/**
+ * A stand-in for the official settings dialog. The STRUCTURE is what the
+ * preload's heuristics read (a visible [role="dialog"] mentioning 设置, a
+ * navList whose active item is 通用设置, and a content > options > panel
+ * column); the styling below only makes the window legible when a run is
+ * watched, so a bare fixture is not mistaken for a broken product surface.
+ * The official theme variables are declared for the same reason: the injected
+ * card resolves its colors from them, exactly as it does in the real UI.
+ */
+const FIXTURE_STYLE = ':root{color-scheme:light;'
+  + '--dsw-alias-label-primary:#0F1115;--dsw-alias-label-secondary:#6E7480;--dsw-alias-label-tertiary:#8A9099;'
+  + '--dsw-alias-label-dimmed:#9AA0A6;--dsw-alias-bg-layer-1:#fff;--dsw-alias-bg-module-platform:#EBEEF2;'
+  + '--dsw-alias-border-l2:#D8D8D4;--dsw-alias-interactive-bg-hover:#F5F6F7;'
+  + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}'
+  + '*{box-sizing:border-box}'
+  + 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eceef1;color:#0f1115;font-size:14px}'
+  + '[role="dialog"]{display:flex;flex-direction:column;width:min(880px,calc(100vw - 64px));'
+  + 'height:min(620px,calc(100vh - 64px));background:#fff;border-radius:16px;box-shadow:0 24px 64px rgba(15,17,21,.18);overflow:hidden}'
+  + '.head{display:flex;align-items:center;padding:20px 24px 12px;font-size:18px;font-weight:600;letter-spacing:-.01em}'
+  + '.content{display:flex;flex:1;min-height:0}'
+  + '.navList{width:200px;flex:0 0 auto;padding:8px 12px;display:flex;flex-direction:column;gap:4px}'
+  + '.navList button{width:100%;text-align:left;padding:9px 12px;border:none;border-radius:8px;background:transparent;'
+  + 'font:inherit;color:#0f1115;cursor:pointer}'
+  + '.navList .active,.navList button.active{background:#f0f1f3;font-weight:500}'
+  + '.options{flex:1;min-width:0;overflow:auto;padding:0 24px 24px}'
+  + '.options>div>p{margin:0;padding:16px 0;color:#6e7480}'
+
+// A THIRD origin, standing in for an OAuth callback or an embedded preview: a
+// sub-frame of the Web UI is entitled to redirect off-origin. Only the top
+// frame carries the preload, so only the top frame is the navigation guard's
+// business — see the sub-frame assertion below.
+const thirdPartyServer = createServer((_req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+  res.end('<!doctype html><meta charset="utf-8"><title>Third Party</title><body><p id="landed">third-party frame</p>')
+})
+await new Promise((resolve, reject) => {
+  thirdPartyServer.once('error', reject)
+  thirdPartyServer.listen(0, '127.0.0.1', resolve)
+})
+const thirdPartyAddress = thirdPartyServer.address()
+if (typeof thirdPartyAddress !== 'object' || thirdPartyAddress === null) throw new Error('third-party server did not bind')
+const thirdPartyOrigin = 'http://127.0.0.1:' + String(thirdPartyAddress.port)
+
 const remoteServer = createServer((req, res) => {
   if (req.url === '/api/host.describe' && req.method === 'POST') {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ result: { ok: true } }))
     return
   }
+  if (req.url === '/redirect-frame') {
+    res.writeHead(302, { location: thirdPartyOrigin + '/landed' })
+    res.end()
+    return
+  }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  res.end('<!doctype html><html><head><title>Remote Harness Fixture</title></head><body>'
-    + '<div role="dialog"><div class="content"><div class="navList"><button class="active">通用设置</button></div>'
-    + '<div class="options"><div><p>fixture setting</p></div></div></div></div></body></html>')
+  res.end('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+    + '<title>Remote Harness Fixture</title><style>' + FIXTURE_STYLE + '</style></head><body>'
+    + '<div role="dialog"><div class="head">设置</div>'
+    + '<div class="content"><div class="navList"><button class="active">通用设置</button></div>'
+    + '<div class="options"><div><p>fixture setting</p></div></div></div></div>'
+    + '<iframe id="cross-origin-frame" src="/redirect-frame" hidden></iframe></body></html>')
 })
 await new Promise((resolve, reject) => {
   remoteServer.once('error', reject)
@@ -57,6 +108,21 @@ try {
   if (legacyStatus.selectedMode !== 'connect' || legacyStatus.savedServerUrl !== remoteOrigin || !legacyStatus.canSwitch) {
     throw new Error('legacy remote settings were not exposed as switchable Connect mode: ' + JSON.stringify(legacyStatus))
   }
+  // will-redirect fires for EVERY frame, unlike will-navigate. Guarding it
+  // without the isMainFrame test cancels this ordinary sub-frame 302 and pops
+  // the system browser for it; the frame would then sit empty forever.
+  const framedOrigin = await window
+    .frameLocator('#cross-origin-frame').locator('#landed')
+    .waitFor({ state: 'attached', timeout: 5_000 })
+    .then(() => window.frames().map(frame => new URL(frame.url()).origin).find(origin => origin === thirdPartyOrigin) ?? 'none',
+      () => 'frame never landed')
+  if (framedOrigin !== thirdPartyOrigin) {
+    throw new Error('cross-origin sub-frame redirect was blocked by the top-frame navigation guard: ' + framedOrigin)
+  }
+  if (new URL(window.url()).origin !== remoteOrigin) {
+    throw new Error('the top frame left the configured origin: ' + window.url())
+  }
+
   await window.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3_000 })
   if (await window.locator('#dsh-enhance-switch').textContent() !== '切换到本地'
     || await window.locator('#dsh-enhance-url').inputValue() !== remoteOrigin) {
@@ -97,13 +163,32 @@ try {
     throw new Error('Connect switch was not persisted: ' + JSON.stringify(remoteSettings))
   }
 
+  // Saving an empty address while already in Smart local mode resolves to the
+  // origin the window is ALREADY showing. That still has to reconnect: without
+  // it the card's "已保存，正在重连…" note stays on screen forever. Left for
+  // last, because an empty save legitimately drops the saved remote address.
+  const backToSmart = await window.evaluate(() => window.desktop.connection.switchMode())
+  if (!backToSmart.switched || backToSmart.mode !== 'smart') {
+    throw new Error('failed to return to Smart mode: ' + JSON.stringify(backToSmart))
+  }
+  window = app.windows()[0]
+  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+  await window.evaluate(() => { window.__dshReconnectMarker = 1 })
+  const resaved = await window.evaluate(() => window.desktop.connection.saveServerUrl(''))
+  if (!resaved.saved) throw new Error('saving the unchanged Smart selection failed: ' + JSON.stringify(resaved))
+  await window.waitForFunction(() => window.__dshReconnectMarker === undefined, { timeout: 30_000 })
+  await window.waitForFunction(() => document.querySelector('#root')?.children.length > 0, { timeout: 60_000 })
+
   console.log('✓ legacy remote configuration remains active')
+  console.log('✓ a cross-origin sub-frame redirect is not treated as a top-frame navigation')
   console.log('✓ enhanced connection card shows the saved remote shortcut')
   console.log('✓ native settings shows the context-aware shortcut')
   console.log('✓ shortcut switches to Smart mode without deleting the remote address')
   console.log('✓ shortcut switches back to the saved remote origin')
+  console.log('✓ saving an unchanged selection still reconnects the window')
 } finally {
   await app?.close().catch(() => {})
   await new Promise(resolve => remoteServer.close(resolve))
+  await new Promise(resolve => thirdPartyServer.close(resolve))
   rmSync(checkHome, { recursive: true, force: true })
 }
