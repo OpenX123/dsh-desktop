@@ -103,6 +103,8 @@ If the bundled runtime cannot start, or you want to use another instance, open t
 | **Smart** (default) | Most local users | Reuses the official instance on `127.0.0.1:3080`, or starts a local `dsh web` process when needed. |
 | **Connect** | Remote machines, containers, or a manually managed runtime | Connects to the Web UI address you provide and does not start a local runtime. |
 
+After you save a valid remote address, connection settings show a **Switch to local / Switch to remote** shortcut. Switching locally enters Smart mode but keeps the remote address for one-click return; use **Save and reconnect** only when editing the address.
+
 Leave the Web UI address empty to return to Smart mode. Connection settings can be changed from the enhanced block in General Settings or from **Web UI Connection…** in the application menu.
 
 ![Connection settings in the current desktop client](docs/images/readme-settings.png)
@@ -130,6 +132,7 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 - Closing the main window keeps the app available in the system tray/menu bar.
 - Reopen the window from the tray icon.
 - Quit from the tray menu, application menu, or `Cmd+Q` on macOS.
+- If the official `127.0.0.1:3080` instance reused by Smart mode disappears, the client falls back to its managed local `dsh web`. A failed fixed remote connection never switches to a local service implicitly.
 - If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
 - If the page is unexpectedly blank after system resume or a long idle, the client verifies the Web UI and reloads it automatically.
 - Before starting the local service, the packaged macOS app reads the user's login-shell `PATH` once with a three-second deadline and merges only absolute directories. This keeps Homebrew and version-manager tools available to Agents when the app starts from Finder or the Dock.

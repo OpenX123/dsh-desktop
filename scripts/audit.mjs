@@ -114,6 +114,8 @@ check('official settings dialog', settingsDialogVisible, '[role="presentation"]'
 const enhancedCardVisible = await settingsDialog.locator('#dsh-desktop-enhance').waitFor({ state: 'visible', timeout: 3000 })
   .then(() => true, () => false)
 check('desktop connection card', enhancedCardVisible, '#dsh-desktop-enhance')
+check('connection shortcut hidden without a saved remote address',
+  await settingsDialog.locator('#dsh-enhance-switch').isHidden(), '#dsh-enhance-switch')
 
 // Exercise the official appearance control, rather than emulating an OS media
 // query: the UI owns its theme state and provides the tokens our card consumes.

@@ -46,8 +46,10 @@ function childHome(): string {
 const SETTINGS_FILE = join(clientHome(), 'settings.json')
 
 interface ClientSettings {
-  /** Empty/absent = launch the local `dsh web`; otherwise the Web UI origin to connect to. */
+  /** A reusable fixed Web UI origin. Empty/absent means Smart mode only. */
   serverUrl?: string
+  /** Missing preserves the legacy behavior: a saved serverUrl is active. */
+  connectionMode?: 'smart' | 'connect'
 }
 
 function loadSettings(): ClientSettings {
@@ -75,6 +77,11 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Whether persisted settings currently select the reusable remote origin. */
+function usesConfiguredServer(settings: ClientSettings): boolean {
+  return normalizeServerUrl(settings.serverUrl) !== undefined && settings.connectionMode !== 'smart'
 }
 
 /**
@@ -417,7 +424,9 @@ let tray: Tray | null = null
 let webUi: WebUiManager | undefined
 const MAX_LAUNCH_RETRIES = 3
 const INITIAL_RELAUNCH_DELAY_MS = 250
+const STABLE_RUNTIME_RESET_MS = 60_000
 let launchBudget = MAX_LAUNCH_RETRIES
+let launchBudgetResetTimer: NodeJS.Timeout | undefined
 let quitting = false
 /** Monotonic connection intent; stale probes/readiness callbacks cannot win. */
 let connectionGeneration = 0
@@ -441,7 +450,7 @@ function relaunchDelayMs(remainingRetries: number): number {
  * so conversations (like the live one in the browser) sync in real time. Only
  * when nothing answers does the client launch its own local `dsh web`.
  */
-const DEFAULT_WEB_PROBE_URL = 'http://127.0.0.1:3080'
+const DEFAULT_WEB_PROBE_URL = process.env.DSH_DESKTOP_PROBE_URL ?? 'http://127.0.0.1:3080'
 
 /** The current Web UI origin: the probed/configured address, or the local child's URL. */
 let configuredTarget: string | undefined
@@ -528,6 +537,19 @@ async function recoverBlankWindow(reason: string, force = false): Promise<void> 
 
   windowRecoveryInFlight = true
   try {
+    // A reused local instance is an optimization, not a durable dependency.
+    // Probe it even while the renderer still contains stale visible content.
+    if (probeConnected) {
+      const generation = connectionGeneration
+      if (await probeWebUi(target) === undefined) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        if (generation === connectionGeneration && probeConnected && currentTarget() === target
+          && await probeWebUi(target, 500) === undefined) {
+          fallbackFromProbedInstance(reason)
+        }
+      }
+      return
+    }
     if (!force && await hasVisiblePageContent(window)) return
     if (!force) {
       await new Promise(resolve => setTimeout(resolve, 2_000))
@@ -662,6 +684,12 @@ function createWindow(): void {
   // retry or the connection-settings window.
   mainWindow.webContents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
     if (!isMainFrame || quitting || code === -3 || failedUrl.startsWith('data:')) return // -3 = ERR_ABORTED
+    if (probeConnected && appOrigin(failedUrl) === appOrigin(currentTarget() ?? '')) {
+      fallbackFromProbedInstance('load failed: ' + description)
+      return
+    }
+    // A mode change can leave one late failure event from the old origin.
+    if (appOrigin(failedUrl) !== appOrigin(currentTarget() ?? '')) return
     void dialog.showMessageBox(mainWindow as BrowserWindow, {
       type: 'error',
       title: 'Harness',
@@ -763,14 +791,27 @@ function createTray(): void {
 
 /** The connection facts shared by the settings server and the IPC bridge. */
 function getStatusJson(): Record<string, unknown> {
+  const settings = loadSettings()
+  const savedServerUrl = normalizeServerUrl(settings.serverUrl)
   return {
     mode: probeConnected ? 'probe' : configuredTarget !== undefined ? 'connect' : 'local',
     targetUrl: currentTarget() ?? '',
     desktopVersion: desktopClientVersion(),
     dshVersion: bundledDshVersion(),
+    savedServerUrl: savedServerUrl ?? '',
+    selectedMode: usesConfiguredServer(settings) ? 'connect' : 'smart',
+    canSwitch: savedServerUrl !== undefined,
     ...webUi?.pid() !== undefined && { childPid: webUi.pid() },
     ...webUi?.lastError !== null && webUi?.lastError !== undefined && { lastError: webUi.lastError },
   }
+}
+
+/** Replace the current page with the local startup surface before recovery. */
+function showLoadingDocument(): void {
+  const window = mainWindow
+  if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
+  loadingDocumentActive = true
+  void window.loadURL(loadingPageUrl()).catch(() => {})
 }
 
 let cachedDesktopVersion: string | undefined
@@ -809,11 +850,17 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + 'const modeLabel=s.mode==="probe"?"已连接本机正在运行的官方实例":s.mode==="connect"?"连接":"本地 dsh web";'
   + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
   + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用");'
-  + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";}catch(e){$("status").textContent="状态不可用"}}'
+  + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";'
+  + '$("switch").hidden=!s.canSwitch;$("switch").textContent=s.selectedMode==="connect"?"切换到本地":"切换到远程";'
+  + '}catch(e){$("status").textContent="状态不可用"}}'
   + '$("save").onclick=async()=>{try{const r=await fetch("desktop/settings",{method:"POST",headers:{"content-type":"application/json"},'
   + 'body:JSON.stringify({serverUrl:$("url").value.trim()})});const j=await r.json();'
   + '$("note").textContent=j.saved?"已保存，正在重连…":("保存失败："+(j.error||"未知错误"));'
   + 'if(j.saved)setTimeout(()=>window.close(),900)}catch(e){$("note").textContent="保存失败："+e.message}};'
+  + '$("switch").onclick=async()=>{try{$("switch").disabled=true;const r=await fetch("desktop/switch",{method:"POST"});const j=await r.json();'
+  + '$("note").textContent=j.switched?"正在切换…":("切换失败："+(j.error||"未知错误"));if(!j.switched)$("switch").disabled=false;'
+  + 'if(j.switched)setTimeout(()=>window.close(),500);'
+  + '}catch(e){$("note").textContent="切换失败："+e.message;$("switch").disabled=false}};'
   + '$("close").onclick=()=>window.close();refresh();'
 
 /** The connection-settings page (self-contained except for its same-origin script). */
@@ -831,7 +878,7 @@ function settingsPageHtml(): string {
     + '<p id="versions"></p>'
     + '<label for="url">Web UI 地址（留空 = 本地启动 dsh）</label>'
     + '<input id="url" placeholder="http://127.0.0.1:3080" spellcheck="false">'
-    + '<div><button id="save" class="primary">保存并重连</button><button id="close">关闭</button></div>'
+    + '<div><button id="switch" class="primary" hidden>切换连接</button><button id="save">保存并重连</button><button id="close">关闭</button></div>'
     + '<p id="note"></p>'
     + '<script src="desktop/settings.js"></script></body></html>'
 }
@@ -839,6 +886,7 @@ function settingsPageHtml(): string {
 /** Connect to a fixed Web UI origin: stop any local child, point the window at it. */
 function connectTo(url: string): void {
   const generation = ++connectionGeneration
+  if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
   configuredTarget = url
   probeConnected = false
   childTarget = undefined
@@ -854,9 +902,43 @@ function startLocalRuntime(generation: number): void {
   launchWindow(generation)
 }
 
+/** Start a fresh bounded recovery window for an intentional local selection. */
+function resetRuntimeRecoveryBudget(): void {
+  launchBudget = MAX_LAUNCH_RETRIES
+  if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
+  launchBudgetResetTimer = undefined
+}
+
+/** Restore the retry budget only after one local generation proves stable. */
+function markLocalRuntimeReady(url: string): void {
+  childTarget = url
+  if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
+  launchBudgetResetTimer = setTimeout(() => {
+    if (configuredTarget === undefined && childTarget === url) launchBudget = MAX_LAUNCH_RETRIES
+    launchBudgetResetTimer = undefined
+  }, STABLE_RUNTIME_RESET_MS)
+  launchBudgetResetTimer.unref()
+}
+
+/** A Smart-mode probed instance disappeared; fall back to the managed child. */
+function fallbackFromProbedInstance(reason: string): boolean {
+  if (!probeConnected || quitting) return false
+  const failedTarget = configuredTarget
+  const generation = ++connectionGeneration
+  configuredTarget = undefined
+  probeConnected = false
+  childTarget = undefined
+  resetRuntimeRecoveryBudget()
+  console.warn('[desktop] probed Web UI unavailable; starting local runtime (' + reason + '): ' + (failedTarget ?? 'unknown'))
+  showLoadingDocument()
+  startLocalRuntime(generation)
+  return true
+}
+
 /** Smart mode: prefer a locally running official instance, else launch our own. */
 function resolveRuntime(): void {
   const generation = ++connectionGeneration
+  resetRuntimeRecoveryBudget()
   if (process.env.DSH_DESKTOP_SKIP_PROBE === '1') {
     startLocalRuntime(generation)
     return
@@ -875,6 +957,50 @@ function resolveRuntime(): void {
   })
 }
 
+/** Apply one persisted connection choice without changing its saved address. */
+function applyConnectionSettings(settings: ClientSettings): void {
+  const explicit = normalizeServerUrl(settings.serverUrl)
+  if (explicit !== undefined && usesConfiguredServer(settings)) connectTo(explicit)
+  else resolveRuntime()
+}
+
+/** Save an address edit. A non-empty valid address becomes the active target. */
+function saveServerUrlAndReconnect(serverUrl: unknown): { saved: boolean; error?: string } {
+  try {
+    const raw = typeof serverUrl === 'string' ? serverUrl.trim() : ''
+    if (raw === '') {
+      const next: ClientSettings = { connectionMode: 'smart' }
+      saveSettings(next)
+      applyConnectionSettings(next)
+      return { saved: true }
+    }
+    const explicit = normalizeServerUrl(raw)
+    if (explicit === undefined) return { saved: false, error: '请输入有效的 HTTP 或 HTTPS 地址' }
+    const next: ClientSettings = { serverUrl: explicit, connectionMode: 'connect' }
+    saveSettings(next)
+    applyConnectionSettings(next)
+    return { saved: true }
+  } catch (error) {
+    return { saved: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** Toggle between Smart local selection and the saved fixed origin. */
+function switchConnectionMode(): { switched: boolean; mode?: 'smart' | 'connect'; error?: string } {
+  try {
+    const current = loadSettings()
+    const explicit = normalizeServerUrl(current.serverUrl)
+    if (explicit === undefined) return { switched: false, error: '请先保存远程 Web UI 地址' }
+    const mode = usesConfiguredServer(current) ? 'smart' : 'connect'
+    const next: ClientSettings = { serverUrl: explicit, connectionMode: mode }
+    saveSettings(next)
+    applyConnectionSettings(next)
+    return { switched: true, mode }
+  } catch (error) {
+    return { switched: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /** Open the window at the CURRENT target, waiting for local readiness if needed. */
 function launchWindow(generation = connectionGeneration): void {
   if (generation !== connectionGeneration || quitting) return
@@ -889,8 +1015,7 @@ function launchWindow(generation = connectionGeneration): void {
   void webUi?.ready().then((url) => {
     if (generation !== connectionGeneration || quitting) return
     console.log('[desktop] dsh runtime ready: ' + url)
-    childTarget = url
-    launchBudget = MAX_LAUNCH_RETRIES
+    markLocalRuntimeReady(url)
     if (!mainWindowRequested) return
     if (configuredTarget === undefined) loadMainWindow(url)
   }, () => {
@@ -972,20 +1097,9 @@ function startSettingsServer(): Promise<number> {
           if (bodyTooLarge) return
           try {
             const parsed = JSON.parse(body) as { serverUrl?: unknown }
-            const next: ClientSettings = {
-              ...typeof parsed.serverUrl === 'string' ? { serverUrl: parsed.serverUrl } : {},
-            }
-            saveSettings(next)
-            const explicit = normalizeServerUrl(next.serverUrl)
-            if (explicit !== undefined) {
-              // Point the main window at the fixed address (stop the local child).
-              connectTo(explicit)
-            } else {
-              // Back to smart mode: running official instance, or the local child.
-              resolveRuntime()
-            }
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ saved: true }))
+            const result = saveServerUrlAndReconnect(parsed.serverUrl)
+            res.writeHead(result.saved ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify(result))
           } catch (error) {
             res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
             res.end(JSON.stringify({ saved: false, error: error instanceof Error ? error.message : String(error) }))
@@ -995,6 +1109,12 @@ function startSettingsServer(): Promise<number> {
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
       res.end(JSON.stringify(loadSettings()))
+      return
+    }
+    if (pathname === '/desktop/switch' && req.method === 'POST') {
+      const result = switchConnectionMode()
+      res.writeHead(result.switched ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(result))
       return
     }
     if (pathname === '/' || pathname === '/desktop/settings.html') {
@@ -1050,15 +1170,23 @@ function boot(): void {
         return
       }
       childTarget = undefined
-      if (!wasReady && retryable && launchBudget > 0) {
+      if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
+      launchBudgetResetTimer = undefined
+      if (retryable && launchBudget > 0) {
         launchBudget -= 1
         const delayMs = relaunchDelayMs(launchBudget)
         const generation = connectionGeneration
         console.error('[desktop] dsh web ' + (wasReady ? 'exited' : 'failed to start') + ' (' + String(code) + '/' + String(signal)
           + '); relaunching in ' + String(delayMs) + 'ms (' + String(launchBudget) + ' left)')
+        if (mainWindowRequested) {
+          showLoadingDocument()
+          updateLoadingStatus(
+            wasReady ? '本地服务意外退出，正在重启…' : '本地服务启动失败，正在重试…',
+            wasReady ? 'The local service exited; restarting…' : 'The local service did not start; retrying…',
+          )
+        }
         setTimeout(() => {
           if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
-          updateLoadingStatus('本地服务启动失败，正在重试…', 'The local service did not start; retrying…')
           webUi?.spawn()
           if (mainWindowRequested) {
             launchWindow(generation)
@@ -1069,8 +1197,7 @@ function boot(): void {
           // unhandled promise rejection.
           void webUi?.ready().then((url) => {
             if (quitting || configuredTarget !== undefined || generation !== connectionGeneration) return
-            childTarget = url
-            launchBudget = MAX_LAUNCH_RETRIES
+            markLocalRuntimeReady(url)
           }, () => {})
         }, delayMs)
         return
@@ -1095,14 +1222,7 @@ function boot(): void {
     },
   )
 
-  const explicit = normalizeServerUrl(settings.serverUrl)
-  if (explicit !== undefined) {
-    // Explicit address: fixed connection.
-    connectTo(explicit)
-    return
-  }
-  // Smart mode: probe a running official instance, else launch the local child.
-  resolveRuntime()
+  applyConnectionSettings(settings)
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -1144,17 +1264,9 @@ if (!gotLock) {
     // The official page's enhanced-features card bridges through these.
     ipcMain.handle('desktop:connection:status', () => getStatusJson())
     ipcMain.handle('desktop:connection:save', (_event, serverUrl: unknown) => {
-      try {
-        const url = typeof serverUrl === 'string' ? serverUrl.trim() : ''
-        saveSettings(typeof url === 'string' && url !== '' ? { serverUrl: url } : {})
-        const explicit = normalizeServerUrl(url)
-        if (explicit !== undefined) connectTo(explicit)
-        else resolveRuntime()
-        return { saved: true }
-      } catch (error) {
-        return { saved: false, error: error instanceof Error ? error.message : String(error) }
-      }
+      return saveServerUrlAndReconnect(serverUrl)
     })
+    ipcMain.handle('desktop:connection:switch', () => switchConnectionMode())
     ipcMain.on('desktop:open-connection-settings', () => { openSettingsWindow() })
     await guiPathReady
     boot()
@@ -1179,6 +1291,7 @@ if (!gotLock) {
     event.preventDefault()
     quitting = true
     if (windowHealthTimer !== undefined) clearInterval(windowHealthTimer)
+    if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
     void webUi?.stop().finally(() => { app.quit() })
   })
 }

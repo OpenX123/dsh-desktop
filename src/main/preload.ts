@@ -23,6 +23,9 @@ interface ConnectionStatus {
   targetUrl: string
   desktopVersion: string
   dshVersion: string | null
+  savedServerUrl: string
+  selectedMode: 'smart' | 'connect'
+  canSwitch: boolean
   childPid?: number
   lastError?: string
 }
@@ -32,6 +35,8 @@ const connection = {
   getStatus: (): Promise<ConnectionStatus> => ipcRenderer.invoke('desktop:connection:status') as Promise<ConnectionStatus>,
   saveServerUrl: (serverUrl: string): Promise<{ saved: boolean; error?: string }> =>
     ipcRenderer.invoke('desktop:connection:save', serverUrl) as Promise<{ saved: boolean; error?: string }>,
+  switchMode: (): Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }> =>
+    ipcRenderer.invoke('desktop:connection:switch') as Promise<{ switched: boolean; mode?: 'smart' | 'connect'; error?: string }>,
 }
 
 contextBridge.exposeInMainWorld('desktop', {
@@ -135,8 +140,12 @@ function injectEnhance(panel: Element): void {
       '#' + ENHANCE_ID + ' .dsh-enhance-input{flex:1;min-width:0;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:8px;padding:6px 10px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);outline:none}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input:focus{border-color:var(--dsw-alias-brand-primary,#0F1115)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-input::placeholder{color:var(--dsw-alias-label-dimmed,#9AA0A6)}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-save{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease}',
-      '#' + ENHANCE_ID + ' .dsh-enhance-save:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;margin-top:8px}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-button{white-space:nowrap;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-button:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-button:disabled{cursor:default;opacity:.55}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
+      '#' + ENHANCE_ID + ' .dsh-enhance-switch:hover{opacity:.88;background:var(--dsw-alias-label-primary,#0F1115)}',
       '#' + ENHANCE_ID + ' .dsh-enhance-note{margin:10px 0 0;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
     ].join('')
     document.head.appendChild(style)
@@ -150,16 +159,35 @@ function injectEnhance(panel: Element): void {
     + '<p class="dsh-enhance-version" id="dsh-enhance-version"></p>'
     + '<div class="dsh-enhance-row">'
     + '<input class="dsh-enhance-input" id="dsh-enhance-url" spellcheck="false" placeholder="Web UI 地址，留空 = 智能（本机官方实例优先，否则本地启动）">'
-    + '<button class="dsh-enhance-save" id="dsh-enhance-save" type="button">保存并重连</button>'
+    + '</div>'
+    + '<div class="dsh-enhance-actions">'
+    + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-enhance-switch" type="button" hidden>切换连接</button>'
+    + '<button class="dsh-enhance-button" id="dsh-enhance-save" type="button">保存并重连</button>'
     + '</div>'
     + '<p class="dsh-enhance-note" id="dsh-enhance-note"></p>'
   const statusEl = block.querySelector('#dsh-enhance-status') as HTMLElement
   const versionEl = block.querySelector('#dsh-enhance-version') as HTMLElement
   const urlEl = block.querySelector('#dsh-enhance-url') as HTMLInputElement
   const noteEl = block.querySelector('#dsh-enhance-note') as HTMLElement
+  const switchEl = block.querySelector('#dsh-enhance-switch') as HTMLButtonElement
   block.querySelector('#dsh-enhance-save')?.addEventListener('click', async () => {
-    const result = await connection.saveServerUrl(urlEl.value.trim())
-    noteEl.textContent = result.saved ? '已保存，正在重连…' : ('保存失败：' + (result.error ?? '未知错误'))
+    try {
+      const result = await connection.saveServerUrl(urlEl.value.trim())
+      noteEl.textContent = result.saved ? '已保存，正在重连…' : ('保存失败：' + (result.error ?? '未知错误'))
+    } catch (error) {
+      noteEl.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error))
+    }
+  })
+  switchEl.addEventListener('click', async () => {
+    switchEl.disabled = true
+    try {
+      const result = await connection.switchMode()
+      noteEl.textContent = result.switched ? '正在切换…' : ('切换失败：' + (result.error ?? '未知错误'))
+      if (!result.switched) switchEl.disabled = false
+    } catch (error) {
+      noteEl.textContent = '切换失败：' + (error instanceof Error ? error.message : String(error))
+      switchEl.disabled = false
+    }
   })
   void connection.getStatus().then((status) => {
     const modeLabel = status.mode === 'probe'
@@ -169,6 +197,9 @@ function injectEnhance(panel: Element): void {
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
     versionEl.textContent = '桌面客户端 v' + status.desktopVersion + ' · 内置 dsh ' + (status.dshVersion ?? '不可用')
+    urlEl.value = status.savedServerUrl
+    switchEl.hidden = !status.canSwitch
+    switchEl.textContent = status.selectedMode === 'connect' ? '切换到本地' : '切换到远程'
   }).catch(() => { statusEl.textContent = '连接状态不可用' })
   panel.appendChild(block)
 }
