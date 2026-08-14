@@ -98,10 +98,17 @@ If the bundled runtime cannot start, or you want to use another instance, open t
 
 ## Two connection modes
 
+The client serves two audiences, and both paths are first-class:
+
+- **The bundled runtime** exists so the app works the moment it is installed. Releases carry a pinned official runtime; no Node.js, pnpm, or `dsh` CLI required.
+- **Connecting to a full runtime you manage** exists for developers. Run `dsh web` in your own terminal — locally, on another machine, or in a container — and the desktop client is only the window onto it, leaving runtime version, plugins, and environment entirely under your control.
+
 | Mode | Best for | Behavior |
 |---|---|---|
 | **Smart** (default) | Most local users | Reuses the official instance on `127.0.0.1:3080`, or starts a local `dsh web` process when needed. |
 | **Connect** | Remote machines, containers, or a manually managed runtime | Connects to the Web UI address you provide and does not start a local runtime. |
+
+In Smart mode, an official Web UI already running in your terminal is reused as-is — the developer path: sessions stay shared with the desktop window while the Agent runs inside your own complete shell environment.
 
 After you save a valid remote address, connection settings show a **Switch to local / Switch to remote** shortcut. Switching locally enters Smart mode but keeps the remote address for one-click return; use **Save and reconnect** only when editing the address.
 
@@ -136,7 +143,16 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 - If the official `127.0.0.1:3080` instance reused by Smart mode disappears, the client falls back to its managed local `dsh web`. A failed fixed remote connection never switches to a local service implicitly.
 - If a locally managed Web UI exits unexpectedly, the client performs a small number of bounded restart attempts instead of retrying forever.
 - If the page is unexpectedly blank after system resume or a long idle, the client verifies the Web UI and reloads it automatically.
-- Before starting the local service, the packaged macOS app reads the user's login-shell `PATH` once with a three-second deadline and merges only absolute directories. This keeps Homebrew and version-manager tools available to Agents when the app starts from Finder or the Dock.
+- Before starting the local service, the packaged macOS app reads the user's shell `PATH` once — an interactive login shell first (three-second deadline), falling back to a plain login shell (two seconds) — and merges only absolute directories. This keeps Homebrew, `~/.local/bin`, and directories exported from `~/.zshrc` available to Agents when the app starts from Finder or the Dock.
+
+## The Agent's execution environment on the bundled runtime
+
+On the bundled runtime the Agent's capabilities match official `dsh` — same runtime, same `~/.dsh`, same OS-level sandboxing. The execution environment is aligned with "running dsh in your own terminal" as follows:
+
+- **`node` is always available.** Packaged builds publish Electron's own Node under the name `node` in `~/.dsh-desktop/bin` and **append** that directory to the runtime's `PATH`. A user who never installed Node still gets an Agent that can run `node script.js`; a user who did keeps their own version first. The directory provides no `npm`/`npx` — for those (starting an MCP server with `npx`, say) install Node.js or use Connect mode. The shim works by setting `ELECTRON_RUN_AS_NODE` so Electron runs as Node, so **processes started through it, and their own children,** carry that variable: a node script that goes on to launch an Electron-based tool must clear it, or use a real Node.js install.
+- **The Agent's environment stays clean.** The bundled runtime relies on `ELECTRON_RUN_AS_NODE` to run on Electron's Node, which is an implementation detail of how it is launched. The client removes that variable once the runtime starts and re-attaches it only where the runtime itself respawns Node (the native folder picker, the Windows ACL sandbox runner), so the Agent's own commands never inherit it — otherwise every Electron-based tool the Agent runs (`code`, for instance) would fail.
+- **File permissions.** The app does not enable the App Sandbox, so the Agent's file access is that of an ordinary user process. On macOS the first access to Desktop, Documents, or Downloads is prompted in this app's name, and grants are recorded per application — permissions already given to your terminal do not carry over. The system prompt states the purpose.
+- **Pinned version.** The bundled runtime ships with the installer and cannot be upgraded on its own. Use Connect mode to track the latest official release.
 
 ## Development
 
@@ -144,6 +160,7 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 pnpm run build          # build the Electron main process and preload
 pnpm run prepare:runtime # prepare the bundled dsh runtime closure
 pnpm run check:picker   # verify the bundled Win32 picker compatibility patch
+pnpm run check:runtime-env # verify the Agent environment does not inherit Electron's Node-mode variable
 pnpm run dist           # build packages for the current platform
 pnpm run typecheck      # TypeScript validation
 pnpm run lint           # source and script linting

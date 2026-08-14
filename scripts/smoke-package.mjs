@@ -6,7 +6,7 @@
  * @module desktop/scripts/smoke-package
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -136,6 +136,23 @@ try {
   if (process.platform === 'darwin' && !output.includes('[desktop] restored PATH from the macOS login shell')) {
     throw new Error('packaged macOS app did not restore its login-shell PATH')
   }
+  // This run has no system PATH at all, so the shim is the only `node` the
+  // Agent could find — exactly the position an end user who never installed
+  // Node is in. Assert it exists and actually runs.
+  const shimMatch = /\[desktop\] node shim ready:\s+(.+)/.exec(output)
+  if (shimMatch === null) throw new Error('packaged app did not publish a node shim')
+  const shim = join(shimMatch[1].trim(), process.platform === 'win32' ? 'node.cmd' : 'node')
+  const shimRun = spawnSync(shim, ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  if (!/^v\d+\./.test((shimRun.stdout ?? '').trim())) {
+    throw new Error('bundled node shim did not report a version: ' + JSON.stringify(shimRun.stdout ?? shimRun.error?.message))
+  }
+  // Same contract as `pnpm run check:runtime-env`, but on the Electron Node a
+  // release actually runs: only there is "spawn my own executable and get
+  // Node" — the native picker's and the sandbox runner's code path — real.
+  const contract = spawnSync(process.execPath, [join(APP_DIR, 'scripts', 'check-runtime-env.mjs'), executable], { encoding: 'utf8' })
+  if (contract.status !== 0) {
+    throw new Error('packaged runtime environment contract failed:\n' + (contract.stdout ?? '') + (contract.stderr ?? ''))
+  }
   const response = await fetch(url + '/api/host.describe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -146,6 +163,8 @@ try {
   if (!response.ok || body?.result?.ok !== true) throw new Error('packaged Web UI probe failed')
   console.log('✓ packaged app selected its bundled @deepseek-ai/dsh runtime')
   if (process.platform === 'darwin') console.log('✓ packaged app restored the macOS login-shell PATH')
+  console.log('✓ bundled node shim runs with no system PATH: ' + shim)
+  console.log('✓ packaged runtime keeps ELECTRON_RUN_AS_NODE out of the Agent environment')
   console.log('✓ packaged Web UI answered host.describe at ' + url)
 } catch (error) {
   console.error(output)

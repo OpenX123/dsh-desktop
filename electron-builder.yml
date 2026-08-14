@@ -17,6 +17,10 @@ files:
 extraResources:
   - from: .runtime/node_modules
     to: dsh-runtime/node_modules
+  # The runtime child reads this as an ordinary file, outside app.asar, the
+  # same way it reads the bundled CLI entry beside it.
+  - from: .build/runtime-launcher.mjs
+    to: runtime-launcher.mjs
 
 asar: true
 npmRebuild: false
@@ -41,6 +45,26 @@ mac:
   # what unsigned arm64 builds get. Not a substitute for real notarization.
   identity: "-"
   hardenedRuntime: false
+  # The Agent reads and writes the user's own files, so macOS asks before the
+  # first access to a protected folder. Without these strings the prompt states
+  # no reason at all; with them it says who is asking and why, which is the
+  # difference between an informed grant and a reflexive denial.
+  extendInfo:
+    NSDesktopFolderUsageDescription: >-
+      Harness Agent 需要访问桌面上的文件来完成你交给它的任务。/
+      The Harness Agent needs Desktop files to carry out the tasks you give it.
+    NSDocumentsFolderUsageDescription: >-
+      Harness Agent 需要访问「文稿」中的文件来完成你交给它的任务。/
+      The Harness Agent needs Documents files to carry out the tasks you give it.
+    NSDownloadsFolderUsageDescription: >-
+      Harness Agent 需要访问「下载」中的文件来完成你交给它的任务。/
+      The Harness Agent needs Downloads files to carry out the tasks you give it.
+    NSRemovableVolumesUsageDescription: >-
+      Harness Agent 需要访问可移动磁盘上的项目文件。/
+      The Harness Agent needs project files stored on removable volumes.
+    NSNetworkVolumesUsageDescription: >-
+      Harness Agent 需要访问网络位置上的项目文件。/
+      The Harness Agent needs project files stored on network volumes.
 
 dmg:
   title: DeepSeek Harness Desktop ${version}
