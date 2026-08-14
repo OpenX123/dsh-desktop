@@ -234,6 +234,9 @@ jobs:
       - name: 准备内置 dsh 运行时 / Prepare bundled dsh runtime
         run: pnpm run prepare:runtime
 
+      - name: 验证 Windows 目录选择器兼容补丁 / Verify Win32 picker compatibility patch
+        run: pnpm run check:picker
+
       - name: 生成安装包 / Package application
         run: ${{ matrix.command }}
         env:

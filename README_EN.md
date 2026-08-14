@@ -138,6 +138,8 @@ Use of this client remains subject to the terms and privacy policies of DeepSeek
 
 ```sh
 pnpm run build          # build the Electron main process and preload
+pnpm run prepare:runtime # prepare the bundled dsh runtime closure
+pnpm run check:picker   # verify the bundled Win32 picker compatibility patch
 pnpm run dist           # build packages for the current platform
 pnpm run typecheck      # TypeScript validation
 pnpm run lint           # source and script linting

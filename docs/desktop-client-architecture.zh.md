@@ -18,11 +18,11 @@
 
 开发/诊断环境变量 `DSH_DESKTOP_DSH` 和 `DSH_DESKTOP_NODE` 可覆盖 CLI 与 Node 路径。`DSH_DESKTOP_SKIP_PROBE=1` 仅供自动化测试强制走内置本地运行时，不属于用户配置接口。
 
-当前发布矩阵分别提供 macOS Apple Silicon、macOS Intel 与 Windows x64 安装包，每个原生 runner 只部署当前架构依赖。`dsh-runtime/package.json` 保留 Linux x64 原生可选包，供源码构建及未来恢复发布支持使用。新增发布架构或升级 dsh 时必须同步核对该清单并运行对应平台的安装包 smoke。
+当前发布矩阵分别提供 macOS Apple Silicon、macOS Intel 与 Windows x64 安装包，每个原生 runner 只部署当前架构依赖。`dsh-runtime/package.json` 保留 Linux x64 原生可选包，供源码构建及未来恢复发布支持使用。固定版本的 Win32 原生目录选择器带有一份客户端自有、精确版本绑定的 pnpm 补丁：原实现通过 `koffi.view()` 读取用户选中的 COM 路径时会使 Electron 内置 Node 中止，补丁改为经 Win32 复制准确长度的 UTF-16 字节，并在 Windows 构建中使用 Electron 运行验证。新增发布架构或升级 dsh 时必须同步核对该清单、处理或删除此补丁，并运行对应平台的安装包 smoke。
 
 ## 后果
 
-- `pnpm run dev` 构建并启动客户端；`pnpm run shot` / `pnpm run audit` / `pnpm run e2e` 驱动 Playwright 验证。`pnpm run smoke:package` 在空 PATH 下启动打包应用，要求它明确选择内置 CLI 并通过 `host.describe` 探针。
+- `pnpm run dev` 构建并启动客户端；`pnpm run shot` / `pnpm run audit` / `pnpm run e2e` 驱动 Playwright 验证。`pnpm run check:picker` 验证部署后的补丁，并在 Windows 上通过 Electron Node 检查 Unicode COM 路径读取。`pnpm run smoke:package` 在空 PATH 下启动打包应用，要求它明确选择内置 CLI 并通过 `host.describe` 探针。
 - 客户端对本地 `dsh web` 与任何可达的 Web UI 实例表现一致（唯一耦合是 Web UI 源站），macOS / Windows / Linux 均支持；本地、探测和远程连接均呈现对应实例的原生官方界面。
 - 会话运行 Web UI 自己的组合（官方 web profile）——内容搜索、`/` 命令与技能菜单、后台任务、消息操作（fork、反馈）、plan 模式、待处理队列、agent 预设、权限选择器、goal 芯片、模型目录，以及会话标题/重命名——因为界面本身就是官方 web 应用。
 - 模型可见的身份由官方 web profile 自己的 surface prompt（"Web GUI"）设定；客户端不附加任何自己的部分。

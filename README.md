@@ -138,6 +138,8 @@ Electron 窗口已开启上下文隔离与沙箱、关闭 Node 集成，将页�
 
 ```sh
 pnpm run build          # 构建 Electron 主进程与 preload
+pnpm run prepare:runtime # 准备内置 dsh 运行时闭包
+pnpm run check:picker   # 验证内置 Win32 目录选择器兼容补丁
 pnpm run dist           # 为当前平台生成安装包
 pnpm run typecheck      # TypeScript 类型检查
 pnpm run lint           # 检查源码与脚本
