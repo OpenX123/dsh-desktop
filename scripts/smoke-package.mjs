@@ -152,5 +152,8 @@ try {
     ])
   }
   if (child.exitCode === null) child.kill('SIGKILL')
-  await rm(smokeHome, { recursive: true, force: true })
+  // Chromium utility processes can release Cookies-journal a fraction after
+  // the main Electron process exits on Windows. Node's recursive rm retry
+  // handles that transient EBUSY without weakening any runtime assertion.
+  await rm(smokeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
 }
