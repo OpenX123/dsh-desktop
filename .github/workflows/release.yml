@@ -111,43 +111,29 @@ jobs:
 
           ## 下载说明
 
-          本版本由 GitHub Actions 从对应 tag 自动构建，安装包内置固定版本的官方 `dsh` 运行时，无需另装 Node.js、pnpm 或 dsh CLI。当前安装包尚未进行代码签名，首次打开时操作系统可能显示安全提示。请先使用 `SHA256SUMS.txt` 校验下载文件。
+          本版本由 GitHub Actions 从对应 tag 自动构建，安装包内置固定版本的官方 `dsh` 运行时，无需另装 Node.js、pnpm 或 dsh CLI。当前安装包尚未经过正式的开发者签名认证，首次打开时操作系统可能显示安全提示，按下方说明操作一次即可。
 
-          macOS 用户可在「终端」中计算下载文件的 SHA-256，并与本 Release 的 `SHA256SUMS.txt` 对应条目比较：
-
-          ```sh
-          cd ~/Downloads
-          shasum -a 256 dsh-desktop-*.dmg
-          ```
-
-          确认校验值一致后，把应用拖入「应用程序」并双击一次，让系统记录这次拦截，然后打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」。该按钮只在尝试打开后的一段时间内出现。如果仍提示应用已损坏且没有该按钮，可在「终端」中只移除此应用的下载隔离标记：
+          **macOS**：把应用拖入「应用程序」并双击打开，系统会提示无法打开，此时打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」，输入密码即可。极少数情况下如果提示应用已损坏且没有该按钮，可在「终端」中执行：
 
           ```sh
           xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
           open "/Applications/DeepSeek Harness Desktop.app"
           ```
 
-          不要全局关闭 Gatekeeper，也不需要使用 `sudo`。校验值不一致时请删除并重新下载。
+          **Windows**：如果 Microsoft Defender SmartScreen 弹出提示，点击「更多信息」，再点击「仍要运行」即可。
 
           ## Download notes
 
-          This release was built automatically from the matching tag and bundles a pinned official `dsh` runtime, so Node.js, pnpm, and a separate dsh CLI are not required. Packages are currently unsigned, so the operating system may show a security warning on first launch. Verify downloads with `SHA256SUMS.txt` first.
+          This release was built automatically from the matching tag and bundles a pinned official `dsh` runtime, so Node.js, pnpm, and a separate dsh CLI are not required. Packages are not yet signed with a registered developer certificate, so the operating system may show a security prompt on first launch — follow the steps below once and you're set.
 
-          On macOS, calculate the downloaded file's SHA-256 in Terminal and compare it with the matching entry in this Release's `SHA256SUMS.txt`:
-
-          ```sh
-          cd ~/Downloads
-          shasum -a 256 dsh-desktop-*.dmg
-          ```
-
-          After the checksum matches, drag the app to **Applications** and double-click it once so macOS records the blocked attempt, then open **System Settings → Privacy & Security** and choose **Open Anyway** in the Security section. That button appears only for a limited time after the launch attempt. If macOS still says the app is damaged and the button is unavailable, remove the download quarantine attribute from this app only:
+          **macOS**: Drag the app to **Applications** and double-click it. The system will say it can't be opened; go to **System Settings → Privacy & Security**, and in the Security section choose **Open Anyway**, then enter your password. In rare cases if it still says the app is damaged and that button isn't available, run this in Terminal:
 
           ```sh
           xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
           open "/Applications/DeepSeek Harness Desktop.app"
           ```
 
-          Do not disable Gatekeeper globally; `sudo` is not required. If the checksum does not match, delete the file and download it again.
+          **Windows**: If Microsoft Defender SmartScreen shows a prompt, click **More info**, then **Run anyway**.
           EOF
 
           FLAGS=(--draft --verify-tag --title "DeepSeek Harness Desktop $RELEASE_TAG" --notes-file release-notes.md)

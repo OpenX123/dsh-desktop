@@ -35,6 +35,12 @@ mac:
   category: public.app-category.developer-tools
   target:
     - dmg
+  # No Apple Developer ID yet, so we self-sign ad-hoc instead of shipping
+  # unsigned. This lets Gatekeeper show its normal "unidentified developer"
+  # prompt (with an Open Anyway button) instead of "app is damaged", which is
+  # what unsigned arm64 builds get. Not a substitute for real notarization.
+  identity: "-"
+  hardenedRuntime: false
 
 dmg:
   title: DeepSeek Harness Desktop ${version}

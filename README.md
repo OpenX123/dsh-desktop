@@ -44,28 +44,18 @@ DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它会启
 
 从 [GitHub Releases](https://github.com/bruc3van/dsh-desktop/releases) 下载适合当前系统的安装包并启动即可。发布版内置官方 `dsh` 运行时，不依赖开发环境，也不会在首次启动时执行 npm 安装。
 
-当前自动构建的安装包尚未进行 macOS/Windows 代码签名。操作系统可能在首次启动时显示安全警告；在签名与公证配置完成前，这仍是“直接下载即可运行”的已知发布限制。请只从本仓库 Release 下载，并使用随附的 `SHA256SUMS.txt` 校验文件。
+当前安装包尚未经过正式的开发者签名认证，首次打开时系统可能会弹出提示，按下方说明操作一次即可正常使用。
 
 #### 首次打开被系统拦截时
 
-- **macOS**：当前安装包尚未使用 Apple Developer ID 签名和公证。只从本仓库 Release 下载 DMG，并先在「终端」核对 SHA-256：
+- **macOS**：把应用拖入「应用程序」后双击打开。系统会提示无法打开，去「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」，输入密码即可。
 
-  ```sh
-  cd ~/Downloads
-  shasum -a 256 dsh-desktop-*.dmg
-  ```
-
-  将输出与同一 Release 中 `SHA256SUMS.txt` 对应文件的值比较。确认一致后，把应用拖入「应用程序」，双击一次，然后打开「系统设置 → 隐私与安全性」，在「安全性」区域点击「仍要打开」并输入登录密码。该按钮只会在尝试打开后的一段时间内出现。详见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
-
-  如果仍显示“已损坏，无法打开”且没有「仍要打开」，仅在 SHA-256 已确认一致时执行：
+  极少数情况下如果提示「已损坏，无法打开」、且系统设置里没有「仍要打开」按钮，打开「终端」执行以下命令后再双击打开应用：
 
   ```sh
   xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
-  open "/Applications/DeepSeek Harness Desktop.app"
   ```
-
-  该命令只移除此应用的下载隔离标记，不会全局关闭 Gatekeeper，不需要 `sudo`。如果校验值不一致，请删除文件并重新下载，不要执行上述命令。
-- **Windows**：如果 Microsoft Defender SmartScreen 显示保护提示，请先核对下载来源和 SHA-256，确认后选择「更多信息 → 仍要运行」。
+- **Windows**：如果 Microsoft Defender SmartScreen 弹出提示，点击「更多信息」，再点击「仍要运行」即可。
 
 ### 从源码运行
 
