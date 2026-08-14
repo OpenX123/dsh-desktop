@@ -105,6 +105,15 @@ const AUDITED_INDIRECT = new Map([
 ])
 const PATCHED_CALL = /(?:^|[^.\w$])(?:spawn|spawnSync|fork)\s*\(\s*$/
 
+/** Keep allow-list keys stable when this scan runs on Windows. */
+function runtimeAuditPath(packageName, packageRelativePath) {
+  return '@deepseek-ai/' + packageName + packageRelativePath.replaceAll('\\', '/')
+}
+
+const windowsAuditPath = runtimeAuditPath('dsh-sandbox-local', '\\lib\\index.js')
+check('runtime audit paths are platform-neutral',
+  windowsAuditPath === '@deepseek-ai/dsh-sandbox-local/lib/index.js', windowsAuditPath)
+
 async function scanRuntimeExecPathSites(runtimeModules) {
   const offenders = []
   let sites = 0
@@ -128,7 +137,7 @@ async function scanRuntimeExecPathSites(runtimeModules) {
         let index = source.indexOf('process.execPath')
         while (index !== -1) {
           sites += 1
-          const relative = '@deepseek-ai/' + packageName + join(path.slice(join(scopeDir, packageName).length))
+          const relative = runtimeAuditPath(packageName, path.slice(join(scopeDir, packageName).length))
           if (!PATCHED_CALL.test(source.slice(Math.max(0, index - 60), index)) && !AUDITED_INDIRECT.has(relative)) {
             const line = source.slice(0, index).split('\n').length
             offenders.push(relative + ':' + String(line) + ' — ' + source.slice(index - 40 < 0 ? 0 : index - 40, index + 40).replace(/\s+/g, ' ').trim())
