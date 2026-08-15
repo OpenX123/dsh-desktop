@@ -6,9 +6,11 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertNoTsEntryPoints } from './ts-entry-guard.mjs'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const destination = join(APP_DIR, '.runtime')
@@ -46,18 +48,26 @@ const code = await new Promise((resolve, reject) => {
 if (code !== 0) throw new Error('dsh runtime deployment failed (code=' + String(code) + ')')
 
 /**
- * Build artefacts that no runtime code path can execute: source maps and
- * TypeScript declarations. Removing them cuts the file count the packager
- * compresses and the installer writes back out, which is the dominant cost of
- * the Windows release job.
+ * Build artefacts that no runtime code path can execute: source maps,
+ * TypeScript declarations and sources, and Windows debug symbols (the .pdb
+ * files node-pty ships inside its win32 prebuilds are the largest single
+ * chunk). Removing them cuts the file count the packager compresses and the
+ * installer writes back out, which is the dominant cost of the Windows
+ * release job.
  *
  * Matching is by extension only. Pruning conventional directory names is not
  * safe here: `yaml` ships its runtime composer under `dist/doc/`, so a rule
  * that dropped `doc/` silently removed executable code and the packaged app
- * failed to boot. Licence and notice files are untouched for the same reason
- * they must be — the closure is redistributed inside the installer.
+ * failed to boot.
+ *
+ * `.md` is deliberately NOT pruned: some packages carry their only licence
+ * text in a README (data-uri-to-buffer's README ends with the full MIT text
+ * and the package has no LICENSE file; @img/sharp-libvips-* ships the licence
+ * table of every bundled third-party library in its README). The closure is
+ * redistributed inside the installer, so those files must survive — the ~6 MB
+ * they cost is the price of keeping the redistribution lawful.
  */
-const PRUNED_EXTENSIONS = ['.map', '.d.ts', '.d.cts', '.d.mts']
+const PRUNED_EXTENSIONS = ['.map', '.d.ts', '.d.cts', '.d.mts', '.pdb', '.ts']
 const isPrunedFile = name => PRUNED_EXTENSIONS.some(extension => name.endsWith(extension))
 
 let prunedFiles = 0
@@ -84,3 +94,84 @@ const runtimeModules = join(destination, 'node_modules')
 await prune(runtimeModules)
 console.log('[runtime] pruned ' + prunedFiles + ' development entries ('
   + (prunedBytes / 1e6).toFixed(1) + ' MB) from ' + relative(APP_DIR, runtimeModules))
+
+// The .ts prune is only safe while no manifest resolves to a .ts file at
+// runtime; this invariant fails the release job with the offending package
+// name if a future dependency starts shipping one. See ts-entry-guard.mjs.
+await assertNoTsEntryPoints(runtimeModules)
+console.log('[runtime] no manifest resolves to a pruned .ts entry point')
+
+/**
+ * node-pty is the one package whose npm tarball ships prebuilds for every
+ * platform in a single archive, so pnpm's own os/cpu filtering cannot trim it
+ * (each platform's directory lands in the closure no matter where the build
+ * runs). The release CI knows its target — a native runner — and passes it as
+ * DSH_RUNTIME_TARGET, e.g. `win32-x64`; every other prebuild directory is dead
+ * weight and is removed here.
+ *
+ * The default (unset) keeps them all: a local cross-build (macOS → the
+ * win-unpacked smoke target) must not lose the win32 binaries the artifact
+ * needs to boot.
+ */
+const RUNTIME_TARGET = process.env.DSH_RUNTIME_TARGET
+if (RUNTIME_TARGET !== undefined) {
+  // Shape only. What the target must actually be is decided below against the
+  // directories node-pty really ships — a list that no regex here can stay in
+  // sync with. `linux` is absent because node-pty ships no linux prebuild:
+  // allowing it would only produce a target that passes this check and then
+  // fails the real one with a worse message.
+  if (!/^(darwin|win32)-(arm64|x64)$/.test(RUNTIME_TARGET)) {
+    throw new Error('invalid DSH_RUNTIME_TARGET: ' + RUNTIME_TARGET + ' (expected e.g. win32-x64)')
+  }
+  const collectFiles = async (directory, into = []) => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await collectFiles(path, into)
+      else if (entry.isFile()) into.push(path)
+    }
+    return into
+  }
+  const prebuilds = join(runtimeModules, 'node-pty', 'prebuilds')
+  if (!existsSync(prebuilds)) {
+    // node-pty is a transitive dependency of dsh-subprocess-local that the
+    // hoisted layout hoists to the top level. Fail loud rather than silently
+    // shipping every platform's binaries: a renamed package or a layout change
+    // must be visible in the release job, not baked into the installer.
+    throw new Error('node-pty prebuilds directory not found at ' + prebuilds + ' — the hoisted layout changed; update this prune')
+  }
+  const available = (await readdir(prebuilds, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+  // Deleting "everything that is not the target" is only a prune while the
+  // target is one of the things there. If node-pty renames its directories, or
+  // stops publishing a platform, that same loop is a delete-all that leaves an
+  // installer with no pty.node — and the package smoke would not catch it,
+  // because the client loads node-pty lazily and `host.describe` never opens a
+  // terminal. Decide it here, where the failure is a red release job.
+  if (!available.includes(RUNTIME_TARGET)) {
+    throw new Error('node-pty ships no ' + RUNTIME_TARGET + ' prebuild (available: '
+      + (available.join(', ') || 'none') + ') — the prebuild layout changed; update this prune')
+  }
+  let removedFiles = 0
+  let removedBytes = 0
+  for (const name of available) {
+    if (name === RUNTIME_TARGET) continue
+    const directory = join(prebuilds, name)
+    const files = await collectFiles(directory)
+    for (const file of files) removedBytes += (await stat(file)).size
+    removedFiles += files.length
+    await rm(directory, { recursive: true, force: true })
+  }
+  // The kept directory is what the client will dlopen at runtime; an empty one
+  // means the .pdb/.map prune above matched more than it should have.
+  const keptFiles = await collectFiles(join(prebuilds, RUNTIME_TARGET))
+  if (keptFiles.length === 0) {
+    throw new Error('node-pty ' + RUNTIME_TARGET + ' prebuild directory is empty after pruning')
+  }
+  if (removedFiles > 0) {
+    console.log('[runtime] node-pty prebuilds kept ' + RUNTIME_TARGET + ' (' + keptFiles.length
+      + ' files), removed ' + removedFiles + ' other-platform files ('
+      + (removedBytes / 1e6).toFixed(1) + ' MB)')
+  }
+}

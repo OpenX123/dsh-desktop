@@ -43,6 +43,36 @@ And here is what that means in the product:
 - **In-app updates with SHA-256 verification.** Packaged builds check GitHub Releases on launch (at most once every 12 hours), verify the download hash, then install.
 - **A self-checking release pipeline.** An empty-PATH package smoke test (the artifact must really use its bundled runtime), an update-feed fixture, runtime-environment isolation checks, the Win32 picker patch, and a real-request e2e run — a set of gates that rejects artifacts that build but don't work. See [Development](#development).
 
+## FAQ
+
+**Q: Is this a browser wrapper, or a rewrite on the SDK?**
+
+Neither: the window loads the official Web UI itself, but the client is not just "a web page in a frame" — runtime startup and reuse, connection management, window and navigation hardening, the tray, and in-app updates all live in the shell layer, and this repository maintains no second product renderer (trade-offs and rejected alternatives are documented in the [architecture notes](docs/desktop-client-architecture.md)). Desktop clients in the DeepSeek Harness ecosystem mostly take one of three routes; this project chose the third:
+
+| Route | Approach | Structural cost |
+|---|---|---|
+| ① Self-built workbench UI (e.g. [RongleCat/deepseek-app](https://github.com/RongleCat/deepseek-app)) | The Harness engine runs inside the app; the interface is a self-built three-column workbench, not the official Web UI | Every new feature of the official product surface has to be re-implemented in that UI |
+| ② Packaging wrapper (e.g. [anywhere-labs/deepseek-harness-desktop](https://github.com/anywhere-labs/deepseek-harness-desktop)) | Builds a desktop client on top of the official repository, covering service lifecycle, window and tray integration, UI adaptation, and installer releases | Official updates require merging upstream and cutting a new release before they can follow |
+| ③ Native direct-connect (this project) | The window loads the official Web UI directly; engineering goes into connection, security, the execution environment, and the desktop experience | No self-built UI; desktop enhancements are bounded by what the official interface can carry |
+
+**Q: What's the main value for users?**
+
+1. **It works as installed**: the installer carries the official runtime — no Node.js, pnpm, or `dsh` CLI to install, one API key and you're chatting; the app stays in the tray and closing the window does not quit it;
+2. **It reuses the `dsh` you're already running**: Smart mode probes the running official instance, a `dsh` on PATH, then an npx-cached package — terminal, browser, and desktop share one Harness process and one `~/.dsh`, with sessions synced in real time; Pinned address mode connects straight to a remote or containerized instance;
+3. **The authentic official experience**: the window is the official Web UI, so official docs, tutorials, and shortcuts all match. After an official release, Smart mode and Pinned address get it day zero; the bundled runtime follows via in-app updates.
+
+**Q: How is this different from just using a browser — besides not installing Node.js?**
+
+The official browser path is: install Node.js, run `npx @deepseek-ai/dsh web`, then open the address it prints — and when that terminal closes, the service stops. The client turns this into a managed setup: the installer carries the runtime and launches with a double-click; closing the window does not quit the app, which stays in the tray; Smart mode first probes the instance you're already running, then starts a background service from a `dsh` on PATH or an npx-cached package, and only falls back to its bundled runtime; on top of that come in-app updates and transparent display of the connection source and versions, which a plain browser tab does not have.
+
+**Q: Why emphasize "day-zero official features"?**
+
+A client with a self-built UI or modified source has to re-implement, or merge upstream and re-release, before it can follow an official update; this project's window loads the official Web UI directly, so whatever the official interface changes into is what the window shows. Along the update paths specifically: Smart mode reuses the `dsh` you already upgraded, and Pinned address connects to the newest instance you maintain — both are available the day the official project ships; the bundled runtime is pinned to the official version locked at release time and follows via in-app updates, slightly behind the official release.
+
+**Q: Will plugins come later? What else is planned?**
+
+Capabilities of the official Web UI itself (skills, plugins, interactions) need no schedule from this project — they appear in the window as the official project ships. Work on the desktop shell itself is listed in [Project status](#project-status) and [TODO](TODO.md): macOS/Windows signing and notarization, system notifications, OS keychain integration, voice input, an independent update channel for the bundled runtime, and periodic probing of newly appeared instances.
+
 ## Quick start
 
 ### Download a release

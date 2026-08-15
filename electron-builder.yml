@@ -30,6 +30,19 @@ npmRebuild: false
 compression: normal
 artifactName: dsh-desktop-${version}-${os}-${arch}.${ext}
 
+# Chromium ships 55 locale packs (44 MB on Windows / 45 MB on macOS) but the
+# client only needs zh and en. Both spellings are required: the platforms name
+# them differently (zh-CN.pak on Windows, zh_CN.lproj on macOS) and
+# electron-builder matches with a reverse-prefix check (the wanted name must
+# start with the file's language), so listing "zh-CN" alone would silently
+# delete the macOS Chinese pack. scripts/smoke-package.mjs asserts the result
+# per platform, turning any future silent deletion into a red build.
+electronLanguages:
+  - zh-CN
+  - zh_CN
+  - en-US
+  - en
+
 mac:
   # Apple's app-icon grid: an 824x824 squircle body centred in a 1024 canvas,
   # transparent elsewhere. Matching the system's own proportions keeps the dock

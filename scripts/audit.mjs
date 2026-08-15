@@ -3,6 +3,10 @@
  * boot manifest present, the official sidebar and composer rendered, and no
  * page errors. This replaces the custom-renderer design audit, which no
  * longer applies (the interface is the official product's).
+ *
+ * Before anything launches, the client's identity fingerprint is asserted
+ * (see check-identity.mjs for what that guards against): a mismatch fails
+ * here, in seconds, instead of after the UI walk.
  * Usage: node scripts/audit.mjs
  * @module desktop/scripts/audit
  */
@@ -14,10 +18,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright-core'
+import { assertClientIdentity } from './check-identity.mjs'
+
+// Identity fingerprint guard — see the module comment above. Runs before the
+// version is read: an overwritten manifest has a version too, and reporting it
+// as a stale audit result would hide the real accident.
+assertClientIdentity()
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
 const desktopVersion = JSON.parse(readFileSync(join(APP_DIR, 'package.json'), 'utf8')).version
 const dshVersion = JSON.parse(readFileSync(join(APP_DIR, 'dsh-runtime', 'package.json'), 'utf8')).dependencies['@deepseek-ai/dsh']
+
 const auditHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-audit-'))
 process.on('exit', () => { rmSync(auditHome, { recursive: true, force: true }) })
 const electronEnv = { ...process.env }

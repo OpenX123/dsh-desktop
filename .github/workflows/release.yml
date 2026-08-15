@@ -73,6 +73,12 @@ jobs:
       - name: 安装依赖 / Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Two file reads, before anything is built: a manifest overwritten by a
+      # stray tool run still typechecks, lints and packages — it just ships the
+      # Electron default app instead of this client.
+      - name: 校验客户端身份指纹 / Verify client identity fingerprint
+        run: pnpm run check:identity
+
       - name: 类型检查 / Typecheck
         run: pnpm run typecheck
 
@@ -151,16 +157,19 @@ jobs:
             os: macos-15
             command: pnpm exec electron-builder --mac dmg --arm64 --publish never
             smoke: pnpm run smoke:package
+            runtime_target: darwin-arm64
           - name: macOS Intel
             id: macos-x64
             os: macos-15-intel
             command: pnpm exec electron-builder --mac dmg --x64 --publish never
             smoke: pnpm run smoke:package
+            runtime_target: darwin-x64
           - name: Windows x64
             id: windows-x64
             os: windows-latest
             command: pnpm exec electron-builder --win nsis --x64 --publish never
             smoke: pnpm run smoke:package
+            runtime_target: win32-x64
 
     steps:
       - name: 检出 tag / Checkout tag
@@ -210,6 +219,10 @@ jobs:
 
       - name: 准备内置 dsh 运行时 / Prepare bundled dsh runtime
         run: pnpm run prepare:runtime
+        env:
+          # node-pty ships every platform's prebuilds in one tarball; keep only
+          # the matrix entry's own target (see scripts/prepare-runtime.mjs).
+          DSH_RUNTIME_TARGET: ${{ matrix.runtime_target }}
 
       - name: 验证 Windows 目录选择器兼容补丁 / Verify Win32 picker compatibility patch
         run: pnpm run check:picker

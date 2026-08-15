@@ -22,6 +22,7 @@
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "check:picker": "node scripts/check-win32-picker.mjs",
     "check:runtime-env": "node scripts/check-runtime-env.mjs",
+    "check:identity": "node scripts/check-identity.mjs",
     "pack": "npm run build && npm run prepare:runtime && npm run check:picker && npm run check:runtime-env && electron-builder --dir",
     "dist": "npm run build && npm run prepare:runtime && npm run check:picker && npm run check:runtime-env && electron-builder --publish never",
     "dev": "npm run build && electron .",

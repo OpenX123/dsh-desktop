@@ -18,7 +18,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
@@ -1060,7 +1060,7 @@ function loadingIconTag(): string {
 
 /** The small first-paint surface shown while Smart mode resolves the Web UI. */
 function loadingPageUrl(): string {
-  const chinese = app.getLocale().toLowerCase().startsWith('zh')
+  const chinese = localeChinese()
   const title = chinese ? '正在启动 DeepSeek Harness' : 'Starting DeepSeek Harness'
   const detail = chinese ? '正在准备本地服务…' : 'Preparing the local service…'
   const hint = chinese ? '首次启动通常需要 10–20 秒' : 'The first launch usually takes 10–20 seconds'
@@ -1098,7 +1098,7 @@ function loadingPageUrl(): string {
 /** Reassure the user as a first launch moves beyond its usual 10–20 seconds. */
 function scheduleLoadingHints(): void {
   const generation = ++loadingHintGeneration
-  const chinese = app.getLocale().toLowerCase().startsWith('zh')
+  const chinese = localeChinese()
   const steps = chinese
     ? [
         [10_000, '正在初始化运行时，通常还需要几秒钟…'],
@@ -1136,7 +1136,7 @@ function updateLoadingStatus(chinese: string, english: string, state: 'busy' | '
   // which is exactly when the first status update is issued. Electron holds
   // the script until the page stops loading, so an early call still lands.
   if (!loadingDocumentActive || window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
-  const message = app.getLocale().toLowerCase().startsWith('zh') ? chinese : english
+  const message = localeChinese() ? chinese : english
   const failed = String(state === 'failed')
   void window.webContents.executeJavaScript(
     `document.getElementById('loading-status')?.replaceChildren(${JSON.stringify(message)});`
@@ -2042,8 +2042,114 @@ function showMainWindow(): void {
   mainWindow.focus()
 }
 
+/**
+ * The Web UI's own language setting, as the official client persists it in
+ * `$DSH_HOME/settings.yaml`:
+ *
+ * ```yaml
+ * locale:
+ *   preference: zh
+ * ```
+ *
+ * Read with a two-line scan rather than a YAML dependency: one scalar under
+ * one top-level key is not worth a parser, and an unreadable or unexpected
+ * document must degrade to "unknown" (the system locale then decides) instead
+ * of throwing inside a menu build. Only the local child's home is consulted —
+ * in Connect mode the page's language lives on the remote machine, where this
+ * process cannot see it.
+ */
+function dshLocalePreference(): string | undefined {
+  let text: string
+  try {
+    text = readFileSync(join(childHome(), 'settings.yaml'), 'utf8')
+  } catch {
+    return undefined
+  }
+  let inLocaleBlock = false
+  for (const line of text.split(/\r?\n/)) {
+    // A non-indented line starts a new top-level key: the locale block ends
+    // there, and only a `locale:` line reopens it.
+    if (/^\S/.test(line)) {
+      inLocaleBlock = /^locale:\s*(?:#.*)?$/.test(line)
+      continue
+    }
+    if (!inLocaleBlock) continue
+    const match = /^\s+preference:\s*["']?([A-Za-z][\w-]*)["']?\s*(?:#.*)?$/.exec(line)
+    if (match !== null) return match[1]
+  }
+  return undefined
+}
+
+// Cached: localeChinese runs per rendered string. Kept fresh by
+// watchLocalePreference rather than by a TTL in the hot path.
+let cachedLocalePreference: string | undefined
+let localePreferenceLoaded = false
+
+/**
+ * The language every native surface follows. The Web UI's setting wins: the
+ * menu bar, tray, and dialogs sit around a page the user has already told
+ * which language to speak, and a native frame in the other language is the
+ * mixed-language menu bar this replaced. The system locale is the fallback
+ * for before that setting exists (or when a remote page owns it).
+ */
 function localeChinese(): boolean {
+  if (!localePreferenceLoaded) {
+    cachedLocalePreference = dshLocalePreference()
+    localePreferenceLoaded = true
+  }
+  const preference = cachedLocalePreference
+  if (preference !== undefined) return preference.toLowerCase().startsWith('zh')
   return app.getLocale().toLowerCase().startsWith('zh')
+}
+
+/**
+ * Follow the Web UI's language switch while the client is running. The
+ * official client rewrites settings.yaml atomically (write + rename), which a
+ * watch on the file itself would stop seeing after the first switch, so the
+ * home directory is watched instead and filtered by name. The interval is the
+ * backstop for filesystems where directory watching reports nothing at all
+ * (network mounts, some container layers), and it is also what re-attaches the
+ * watcher: on a first launch the home does not exist yet — the child spawn
+ * creates it, later than this runs — so the first attach fails and only a
+ * retry ever gets a watcher at all.
+ */
+function watchLocalePreference(): void {
+  const apply = (): void => {
+    const next = dshLocalePreference()
+    localePreferenceLoaded = true
+    if (next === cachedLocalePreference) return
+    cachedLocalePreference = next
+    // Both menus bake their labels in at build time, so a language change is
+    // only visible once they are rebuilt.
+    installMenu()
+    refreshTrayMenu()
+  }
+  let watcher: FSWatcher | undefined
+  const attach = (): void => {
+    if (watcher !== undefined) return
+    let opened: FSWatcher
+    try {
+      opened = watch(childHome(), (_event, filename) => {
+        if (filename === null || filename === 'settings.yaml') apply()
+      })
+    } catch {
+      return // No home yet, or an unwatchable path: the poll retries and covers it.
+    }
+    // An FSWatcher is an EventEmitter, so an 'error' with no listener of its
+    // own is an uncaught exception — the home's volume going away would take
+    // the main process down over a menu label. Dropping the watcher instead
+    // lets the poll rebuild it if the path becomes watchable again.
+    opened.on('error', () => {
+      try { opened.close() } catch { /* already torn down by the error */ }
+      if (watcher === opened) watcher = undefined
+    })
+    opened.unref()
+    watcher = opened
+  }
+  attach()
+  const timer = setInterval(() => { attach(); apply() }, 5_000)
+  timer.unref()
+  apply()
 }
 
 function updateDialogCopy(): {
@@ -2676,32 +2782,88 @@ function launchWindow(generation = connectionGeneration, force = false): void {
  * roles carry the standard edit accelerators. Windows/Linux would paint the
  * bar inside the frame above the Web UI's own chrome, so the menu is dropped
  * there entirely — Chromium keeps the editing accelerators on its own.
+ *
+ * Every item states its own label. A `role` alone takes Electron's built-in
+ * label, and those are English literals that no locale changes — which is
+ * what produced a bar reading "About … / 检查更新… / Hide …". The roles are
+ * still what gives each item its behaviour and standard accelerator; only the
+ * text is ours, in the language `localeChinese` reports, using the wording
+ * macOS itself uses for these items. Rebuilt on a language switch by
+ * `watchLocalePreference`.
  */
 function installMenu(): void {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null)
     return
   }
+  const chinese = localeChinese()
+  const name = app.name
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: app.name,
+      label: name,
       submenu: [
-        { role: 'about' as const },
+        { role: 'about', label: (chinese ? '关于 ' : 'About ') + name },
         {
-          label: '检查更新…',
+          label: chinese ? '检查更新…' : 'Check for Updates…',
           click: () => { void handleManualUpdateCheck(true) },
         },
-        { type: 'separator' as const },
-        { role: 'hide' as const },
-        { role: 'hideOthers' as const },
-        { role: 'unhide' as const },
-        { type: 'separator' as const },
-        { role: 'quit' as const },
+        { type: 'separator' },
+        { role: 'services', label: chinese ? '服务' : 'Services' },
+        { type: 'separator' },
+        { role: 'hide', label: (chinese ? '隐藏 ' : 'Hide ') + name },
+        { role: 'hideOthers', label: chinese ? '隐藏其他' : 'Hide Others' },
+        { role: 'unhide', label: chinese ? '全部显示' : 'Show All' },
+        { type: 'separator' },
+        { role: 'quit', label: (chinese ? '退出 ' : 'Quit ') + name },
       ],
     },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
+    {
+      label: chinese ? '编辑' : 'Edit',
+      submenu: [
+        { role: 'undo', label: chinese ? '撤销' : 'Undo' },
+        { role: 'redo', label: chinese ? '重做' : 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: chinese ? '剪切' : 'Cut' },
+        { role: 'copy', label: chinese ? '拷贝' : 'Copy' },
+        { role: 'paste', label: chinese ? '粘贴' : 'Paste' },
+        { role: 'pasteAndMatchStyle', label: chinese ? '粘贴并匹配样式' : 'Paste and Match Style' },
+        { role: 'delete', label: chinese ? '删除' : 'Delete' },
+        { role: 'selectAll', label: chinese ? '全选' : 'Select All' },
+        { type: 'separator' },
+        {
+          label: chinese ? '语音' : 'Speech',
+          submenu: [
+            { role: 'startSpeaking', label: chinese ? '开始朗读' : 'Start Speaking' },
+            { role: 'stopSpeaking', label: chinese ? '停止朗读' : 'Stop Speaking' },
+          ],
+        },
+      ],
+    },
+    {
+      label: chinese ? '显示' : 'View',
+      submenu: [
+        { role: 'reload', label: chinese ? '重新载入' : 'Reload' },
+        { role: 'forceReload', label: chinese ? '强制重新载入' : 'Force Reload' },
+        { role: 'toggleDevTools', label: chinese ? '切换开发者工具' : 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: chinese ? '实际大小' : 'Actual Size' },
+        { role: 'zoomIn', label: chinese ? '放大' : 'Zoom In' },
+        { role: 'zoomOut', label: chinese ? '缩小' : 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: chinese ? '进入全屏幕' : 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: chinese ? '窗口' : 'Window',
+      submenu: [
+        { role: 'minimize', label: chinese ? '最小化' : 'Minimize' },
+        { role: 'zoom', label: chinese ? '缩放' : 'Zoom' },
+        { type: 'separator' },
+        { role: 'front', label: chinese ? '前置全部窗口' : 'Bring All to Front' },
+        { type: 'separator' },
+        { role: 'close', label: chinese ? '关闭窗口' : 'Close Window' },
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -3023,6 +3185,9 @@ if (!gotLock) {
     await startSettingsServer()
     installMenu()
     createTray()
+    // After both exist: the watcher's first pass rebuilds them if the Web UI's
+    // language setting disagrees with the system locale they were built from.
+    watchLocalePreference()
     powerMonitor.on('resume', () => { scheduleWindowHealthCheck('system resume', 3_000) })
     windowHealthTimer = setInterval(() => { void recoverBlankWindow('periodic health check') }, WINDOW_HEALTH_INTERVAL_MS)
     windowHealthTimer.unref()

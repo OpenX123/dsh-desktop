@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -56,6 +56,45 @@ const executable = await findExecutable()
 if (executable === undefined) throw new Error('packaged executable not found under ' + RELEASE_DIR)
 // Fail on the path itself rather than 60 seconds later on a silent spawn.
 if (!existsSync(executable)) throw new Error('packaged executable does not exist: ' + executable)
+
+/**
+ * electron-builder.yml's electronLanguages keeps only zh and en. Two spellings
+ * are required per platform (zh-CN.pak on Windows, zh_CN.lproj on macOS)
+ * because the matcher is a reverse-prefix check: one spelling alone silently
+ * deletes the other platform's Chinese pack. This assertion turns that silent
+ * deletion into a red build on both release matrix legs. Linux is not covered:
+ * the release matrix ships no Linux artifact (revisit if one is added).
+ */
+async function assertLocalePacks(packagedExecutable) {
+  if (process.platform === 'win32') {
+    const dir = join(dirname(packagedExecutable), 'locales')
+    const packs = (await readdir(dir)).filter(name => name.endsWith('.pak')).sort()
+    const expected = ['en-US.pak', 'zh-CN.pak']
+    if (JSON.stringify(packs) !== JSON.stringify(expected)) {
+      throw new Error('unexpected Windows locale packs in ' + dir + ': ' + packs.join(', '))
+    }
+    return
+  }
+  if (process.platform === 'darwin') {
+    // executable = <app>/Contents/MacOS/DeepSeek Harness Desktop
+    const contents = join(dirname(packagedExecutable), '..')
+    const resources = join(contents, 'Resources')
+    // electron-builder keeps the .lproj shells for the wanted languages here;
+    // every other shell is removed (they only declare CFBundleLocalizations).
+    const shells = (await readdir(resources)).filter(name => name.endsWith('.lproj')).sort()
+    if (JSON.stringify(shells) !== JSON.stringify(['en.lproj', 'zh_CN.lproj'])) {
+      throw new Error('unexpected .lproj shells in ' + resources + ': ' + shells.join(', '))
+    }
+    const framework = join(contents, 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
+    const packs = (await readdir(framework)).filter(name => name.endsWith('.lproj')).sort()
+    const expected = ['en.lproj', 'zh_CN.lproj']
+    if (JSON.stringify(packs) !== JSON.stringify(expected)) {
+      throw new Error('unexpected macOS .lproj packs in ' + framework + ': ' + packs.join(', '))
+    }
+    return
+  }
+}
+await assertLocalePacks(executable)
 
 const smokeHome = await mkdtemp(join(tmpdir(), 'dsh-desktop-package-smoke-'))
 const emptyPath = join(smokeHome, 'empty-path')
