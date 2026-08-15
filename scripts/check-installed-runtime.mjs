@@ -225,12 +225,34 @@ try {
   check('an npx-cached dsh is used when PATH has none', status.runtimeSource === 'npx', status.runtimeSource)
   check('the cached package\'s real version is reported',
     status.installedDshVersion === '9.9.9-npxfake', status.installedDshVersion)
+  check('a cache newer than the bundled runtime is not flagged',
+    status.npxCacheOutdated === undefined, status.npxCacheOutdated)
   const ready = await waitForStatus(app, s => typeof s.childPid === 'number' && s.targetUrl !== '')
   check('the cached runtime serves the window', ready.targetUrl.startsWith('http://127.0.0.1:'), ready.targetUrl)
   // The decoy is newer, so reaching the fixture page proves identity was
   // checked rather than the most recent path being launched blindly.
   await app.windows()[0].waitForFunction(() => document.title === 'Installed Harness Fixture', null, { timeout: 20_000 })
   check('a cache entry that is not @deepseek-ai/dsh is rejected', true, 'decoy @deepseek-ai/dsh-root ignored')
+} finally {
+  await app?.close().catch(() => {})
+}
+
+// 3b. A cache OLDER than the bundled runtime stays preferred — it is the
+//     user's own runtime — but the status carries the non-blocking note, so
+//     the connection surfaces can say "re-run npx to refresh".
+try {
+  const home = join(checkHome, 'npx-old')
+  mkdirSync(home, { recursive: true })
+  const cacheRoot = fixtureNpxCache(home, '0.0.1-npxold')
+  app = await launch('npx-old', { DSH_DESKTOP_SKIP_PROBE: '1', npm_config_cache: cacheRoot }, { pathDsh: false })
+  await app.firstWindow()
+  const status = await waitForStatus(app, s => s.mode === 'local' && s.runtimeSource !== undefined)
+  check('an outdated npx cache is still preferred over the bundled runtime',
+    status.runtimeSource === 'npx', status.runtimeSource)
+  check('its real version is still the one reported',
+    status.installedDshVersion === '0.0.1-npxold', status.installedDshVersion)
+  check('and the lag behind the bundled runtime is flagged',
+    status.npxCacheOutdated === true, status.npxCacheOutdated)
 } finally {
   await app?.close().catch(() => {})
 }

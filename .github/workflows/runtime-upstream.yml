@@ -1,0 +1,109 @@
+# 每晚检查上游 @deepseek-ai/dsh 是否发布了比内置运行时更新的版本，有则开 issue。
+# 发现渠道从「有人想起来查 npm」变成主动信号：npx 用户当天就能拿到的新版本，
+# 内置运行时不应滞后太久（README 的承诺是「随应用内更新跟进」）。
+#
+# 只监控不升级：升级本身要过人工清单（picker 补丁对账、平台二进制对齐、
+# @deepseek-ai/* lockfile 逐条审查——见 pnpm-workspace.yaml 各处注释），
+# 自动提 PR 反而会绕过这些约束。
+name: 内置运行时上游监控 / Runtime upstream watch
+
+on:
+  schedule:
+    # 每天北京时间 22:00（UTC 14:00）。GitHub cron 只认 UTC。
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: 比对上游版本 / Compare upstream version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出仓库 / Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 安装 Node / Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: 读取内置版本并查询 npm / Read pinned version and query npm
+        id: versions
+        run: |
+          PINNED="$(node -p "require('./dsh-runtime/package.json').dependencies['@deepseek-ai/dsh']")"
+          LATEST="$(npm view @deepseek-ai/dsh version)"
+          # semver 比较而非 !=：上游 yank 后 latest 可能低于内置版本，那不是
+          # 「可升级」。规则与 src/main/updater.ts 的 compareVersions 一致
+          # （核心号逐段比较，无 prerelease > 有，prerelease 按点分段、数字段按数值）。
+          BEHIND="$(node -e "
+            const parse = (v) => {
+              const clean = v.trim().replace(/^v/i, \"\").split(\"+\")[0]
+              const dash = clean.indexOf(\"-\")
+              const core = (dash === -1 ? clean : clean.slice(0, dash)).split(\".\").map((n) => Number(n) || 0)
+              while (core.length < 3) core.push(0)
+              return { core, pre: dash === -1 ? undefined : clean.slice(dash + 1) }
+            }
+            const a = parse(process.argv[1]), b = parse(process.argv[2])
+            const cmp = (() => {
+              for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1
+              if (a.pre === undefined && b.pre === undefined) return 0
+              if (a.pre === undefined) return 1
+              if (b.pre === undefined) return -1
+              const p = a.pre.split(\".\"), q = b.pre.split(\".\")
+              for (let i = 0; i < Math.max(p.length, q.length); i++) {
+                const x = p[i], y = q[i]
+                if (x === undefined) return -1
+                if (y === undefined) return 1
+                const xn = /^[0-9]+$/.test(x), yn = /^[0-9]+$/.test(y)
+                if (xn && yn) { if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1; continue }
+                if (xn !== yn) return xn ? -1 : 1
+                if (x !== y) return x < y ? -1 : 1
+              }
+              return 0
+            })()
+            console.log(cmp < 0 ? \"1\" : \"0\")
+          " "$PINNED" "$LATEST")"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "内置 / pinned: $PINNED · 上游 / upstream latest: $LATEST · 落后 / behind: $BEHIND"
+          if [ "$BEHIND" != "1" ] && [ "$PINNED" != "$LATEST" ]; then
+            echo "::warning::上游 latest ($LATEST) 不高于内置 ($PINNED)，可能发生了 yank；不开 issue。"
+          fi
+
+      - name: 需要时开 issue / Open an issue when behind
+        if: steps.versions.outputs.behind == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.versions.outputs.pinned }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          TITLE="内置 dsh 运行时可升级：$LATEST"
+          # 同一版本只开一次；上游再发新版会得到新标题、新 issue。
+          if gh issue list --state open --limit 100 --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            echo "已有同版本的 open issue，跳过。"
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$(cat <<EOF
+          npm 上的 \`@deepseek-ai/dsh\` latest 已是 **v$LATEST**，内置运行时仍为 **v$PINNED**。
+
+          https://www.npmjs.com/package/@deepseek-ai/dsh
+
+          升级时按仓库自己的约束逐项过（出处见 \`pnpm-workspace.yaml\` 与 \`dsh-runtime/package.json\` 注释）：
+
+          - [ ] \`dsh-runtime/package.json\` 升 \`@deepseek-ai/dsh\`（精确版本），并确认 \`@deepseek-ai/cordis-plugin-group\` 是否需要同步
+          - [ ] **picker 补丁对账**：\`patchedDependencies\` 钉在旧版本号上，上游修了就删补丁，没修就重新生成到新版本；\`pnpm run check:picker\` 验证
+          - [ ] **平台二进制对齐**：按新 lockfile 核对 \`optionalDependencies\` 里 sharp / koffi / ripgrep / node-addon-require-builtin 的版本
+          - [ ] **逐条审查 lockfile 里 \`@deepseek-ai/*\` 域的全部变更**（\`minimumReleaseAgeExclude\` 豁免了发布冷却期，这一步没有自动化兜底）
+          - [ ] 新依赖如带 lifecycle script，更新 \`allowBuilds\` 名单
+          - [ ] 隐式契约：\`dsh web: <url>\` 就绪行、\`POST /api/host.describe\` 响应形状、\`lib/bin.js\` 入口路径、\`--expose-internals\` 是否仍需要
+          - [ ] 全量门禁：\`build → prepare:runtime → check:picker → check:runtime-env → check:runtime-resolution → check:installed-runtime → check:auto-fallback → smoke:package → e2e → audit\`
+
+          — 本 issue 由 \`.github/workflows/runtime-upstream.yml\` 每日检查自动创建。
+          EOF
+          )"

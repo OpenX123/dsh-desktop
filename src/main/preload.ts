@@ -31,6 +31,8 @@ interface ConnectionStatus {
   /** Which dsh the local child runs. Absent for a remote caller. */
   runtimeSource?: 'override' | 'installed' | 'npx' | 'bundled' | 'checkout' | 'path'
   installedDshVersion?: string
+  /** The selected npx cache lags the bundled runtime (note, not veto). */
+  npxCacheOutdated?: boolean
 }
 
 /** The connection bridge: read/save the Web UI origin through the main process. */
@@ -474,6 +476,10 @@ function injectEnhance(panel: Element): void {
     statusEl.textContent = modeLabel + ' → ' + (status.targetUrl || '（未就绪）')
       + (status.childPid !== undefined ? ' · PID ' + String(status.childPid) : '')
       + (status.lastError !== undefined ? ' · ' + status.lastError : '')
+      // Non-blocking: the cache stays in use; re-running npx is how it updates.
+      + (status.mode === 'local' && status.npxCacheOutdated === true
+        ? ' · npx 缓存低于内置' + (status.dshVersion === null ? '' : ' v' + status.dshVersion) + '，重新运行 npx 可更新'
+        : '')
     urlEl.value = status.savedServerUrl
     switchEl.hidden = status.selectedMode !== 'connect'
     switchEl.textContent = '切换到智能模式'

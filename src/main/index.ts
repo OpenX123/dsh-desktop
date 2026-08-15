@@ -29,6 +29,7 @@ import {
   AUTO_CHECK_DELAY_MS,
   DesktopUpdater,
   RELEASES_PAGE_URL,
+  compareVersions,
   defaultGithubApiUrl,
   defaultUpdateFeedUrl,
   describeFetchError,
@@ -340,6 +341,8 @@ let installedDsh: InstalledDsh | undefined
  */
 let installedDshRejected = false
 let installedDshDetection: Promise<void> | undefined
+/** The selected npx-cached dsh is older than the bundled runtime (note, not veto). */
+let npxCacheOutdated = false
 
 /**
  * Force-kill a child, without waiting. On Windows the direct child may be the
@@ -488,6 +491,20 @@ function detectInstalledDsh(): Promise<void> {
     }
     console.log('[desktop] user-installed dsh detected (' + installedDsh.source + '): '
       + installedDsh.path + ' (v' + installedDsh.version + ')')
+    // The cache never re-resolves `latest` on its own — it is whatever the
+    // user's last `npx @deepseek-ai/dsh` run left behind — so after an in-app
+    // update it can lag the runtime this client ships. It stays preferred
+    // (the user's own runtime, on their own Node), but the connection surfaces
+    // say so: a person who only opens the desktop client would otherwise never
+    // learn that re-running npx gets them the newer copy they already carry.
+    if (installedDsh.source === 'npx') {
+      const bundled = bundledDshVersion()
+      if (bundled !== null && compareVersions(bundled, installedDsh.version) > 0) {
+        npxCacheOutdated = true
+        console.log('[desktop] npx-cached dsh v' + installedDsh.version
+          + ' is older than the bundled v' + bundled + '; keeping the cache — re-run npx to refresh it')
+      }
+    }
   })()
   return installedDshDetection
 }
@@ -1878,6 +1895,10 @@ function getStatusJson(includeLocalDetail = true): Record<string, unknown> {
     ...includeLocalDetail && webUi?.lastSource !== undefined && { runtimeSource: webUi.lastSource },
     ...includeLocalDetail && installedDsh !== undefined && !installedDshRejected
       && { installedDshVersion: installedDsh.version },
+    // A cache lagging the bundled runtime is a note, not a veto: the cache
+    // stays selected, and re-running npx is how the user updates it.
+    ...includeLocalDetail && installedDsh !== undefined && !installedDshRejected && npxCacheOutdated
+      && { npxCacheOutdated: true },
   }
 }
 
@@ -2504,7 +2525,9 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + ':s.runtimeSource==="bundled"?"客户端启动·内置运行时":"客户端启动";}'
   + 'async function refresh(){try{const s=await(await fetch("desktop/status")).json();'
   + 'const modeLabel=sourceLabel(s);'
-  + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"");'
+  + '$("status").textContent=modeLabel+(s.childPid?" (PID "+s.childPid+")":"")+" → "+(s.targetUrl||"（未就绪）")+(s.lastError?" · "+s.lastError:"")'
+  // Non-blocking: the cache stays in use; re-running npx is how it updates.
+  + '+(s.mode==="local"&&s.npxCacheOutdated?" · npx 缓存低于内置"+(s.dshVersion?" v"+s.dshVersion:"")+"，重新运行 npx 可更新":"");'
   + '$("versions").textContent="桌面客户端 v"+s.desktopVersion+" · 内置 dsh "+(s.dshVersion??"不可用")'
   + '+(s.installedDshVersion?" · 本机 dsh "+s.installedDshVersion:"");'
   + 'const c=await(await fetch("desktop/settings")).json();$("url").value=c.serverUrl??"";'
