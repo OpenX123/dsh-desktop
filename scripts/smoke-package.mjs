@@ -125,6 +125,15 @@ const child = spawn(executable, ['--user-data-dir=' + join(smokeHome, 'chromium'
     DSH_HOME: join(smokeHome, 'dsh'),
     DSH_DESKTOP_HOME: join(smokeHome, 'desktop'),
     DSH_DESKTOP_SKIP_PROBE: '1',
+    // Empty PATH is not enough to isolate the artifact on macOS: packaged
+    // builds restore the login shell's PATH on purpose (so an Agent launched
+    // from Finder finds the user's tools), and that restore hands the runtime
+    // resolver the developer's own npx-cached dsh — which it then prefers over
+    // the bundled one, failing the assertion below on any machine that has run
+    // `npx @deepseek-ai/dsh`. What this smoke asserts is the RELEASE's runtime,
+    // not whichever dsh the person building it happens to have, so the
+    // detection is skipped here for the same reason audit.mjs skips it.
+    DSH_DESKTOP_SKIP_INSTALLED_DSH: '1',
     PATH: emptyPath,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
