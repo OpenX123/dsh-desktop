@@ -36,6 +36,7 @@ import {
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
+import { BUNDLED_PLUGIN_NAME, seatBundledPlugin, withdrawBundledPlugin } from './bundled-plugin.ts'
 import { releaseNotesCss, renderReleaseNotes, renderReleaseNotesText } from './release-notes.ts'
 import {
   executableCandidates,
@@ -618,6 +619,47 @@ function resolveBundledDsh(): DshCommand | undefined {
 }
 
 /**
+ * True while the bundled plugin's bundle entry was added by THIS boot, so a
+ * runtime that then never reaches readiness can have the entry taken back
+ * before the retry (a plugin that throws while loading fails the whole plugin
+ * tree, not just itself).
+ */
+let bundledPluginSeatedThisBoot = false
+
+/**
+ * Offer — or stop offering — the bundled plugin to the profile about to boot.
+ *
+ * Only the client's OWN runtime gets the seat. The plugin's live
+ * `@deepseek-ai/*` imports resolve upward from inside this closure, so
+ * handing it to a dsh the user installed themselves would give that runtime a
+ * second copy of the Service classes it already runs. When another runtime is
+ * in play the entry is withdrawn instead, so the profile keeps describing
+ * what actually serves it.
+ * @param dsh - the resolved command this spawn is about to run.
+ */
+function applyBundledPluginSeat(dsh: DshCommand): void {
+  const home = childHome()
+  if (dsh.source !== 'bundled') {
+    if (withdrawBundledPlugin(home)) {
+      console.log('[desktop] bundled plugin seat withdrawn: the runtime is ' + dsh.source)
+    }
+    bundledPluginSeatedThisBoot = false
+    return
+  }
+  // The bundled branch always resolves a bin path; without one there is no
+  // closure to read the plugin out of.
+  if (dsh.binPath === undefined) return
+  // <closure>/node_modules/@deepseek-ai/dsh/lib/bin.js → <closure>/node_modules
+  const modulesDir = join(dsh.binPath, '..', '..', '..', '..')
+  const result = seatBundledPlugin(join(modulesDir, BUNDLED_PLUGIN_NAME), home)
+  bundledPluginSeatedThisBoot = result.added
+  if (result.added) console.log('[desktop] bundled plugin seated: ' + BUNDLED_PLUGIN_NAME)
+  else if (!result.seated && result.error !== undefined) {
+    console.log('[desktop] bundled plugin not seated: ' + result.error)
+  }
+}
+
+/**
  * Resolve the `dsh` command the client spawns for local mode. Order: the
  * explicit DSH_DESKTOP_DSH override, a verified user-installed dsh, the
  * app-bundled npm package, conventional sibling checkouts (dev convenience),
@@ -763,6 +805,7 @@ class WebUiManager {
     }
     console.log('[desktop] dsh runtime: ' + dsh.source + ' (' + dsh.label + ')')
     this.lastSource = dsh.source
+    applyBundledPluginSeat(dsh)
     const child = spawn(dsh.command, [...dsh.args, 'web', '--port', '0'], {
       cwd: childHome(),
       env: {
@@ -3184,6 +3227,19 @@ function boot(): void {
       childTarget = undefined
       if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
       launchBudgetResetTimer = undefined
+      // A runtime that never came up on the first boot after this client
+      // offered its bundled plugin is the one failure the client can undo by
+      // itself: a plugin that throws while loading fails the WHOLE plugin
+      // tree, so the seat goes back before the retry rather than the user
+      // being left with a runtime — and a CLI sharing the profile — that no
+      // longer starts.
+      if (!wasReady && bundledPluginSeatedThisBoot) {
+        bundledPluginSeatedThisBoot = false
+        if (withdrawBundledPlugin(childHome())) {
+          console.warn('[desktop] dsh web did not start after seating ' + BUNDLED_PLUGIN_NAME
+            + '; the seat was withdrawn and the runtime is being retried')
+        }
+      }
       // A user-installed runtime that never reached readiness is not a base
       // this session can build on, and the client does not control it. Drop to
       // the bundled runtime immediately rather than spending the shared retry
