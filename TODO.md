@@ -2,12 +2,12 @@
 
 ## dsh 共存与运行时诊断
 
-- [x] 区分并展示当前运行来源：客户端内置、本机已安装的 dsh、本机 `127.0.0.1:3080` 复用实例、用户配置的远程实例。
+- [x] 区分并展示当前运行来源：客户端内置、本机已安装的 dsh、本机 `127.0.0.1:3080` 复用实例、用户配置的固定地址实例。
 - [x] 单独展示客户端内置 dsh 版本：设置页「桌面客户端 v… · 内置 dsh … · 本机 dsh …」（`bundledDshVersion()`）。
 - [ ] 通过 `host.describe` 响应提取并展示当前连接实例的实际 dsh 版本；`probeWebUi()` 目前只检查 `result.ok` 就丢弃了响应其余字段（含版本信息）。
 - [ ] 当前实例版本与内置版本不一致时给出非阻断提示，并说明只要 API 兼容即可继续使用。
 - [ ] 当其他端口存在独立 dsh 进程、客户端准备以同一个 `DSH_HOME` 启动内置实例时，评估并提示并发运行风险（目前端口探测只针对默认地址 `127.0.0.1:3080`）。
-- [x] 共存回归测试主体场景：只安装 npx/npm 包、默认端口实例正在运行、PATH 本机安装优先、启动失败自动回退、远程/固定地址切换（`scripts/check-installed-runtime.mjs`、`check-connection-switch.mjs`、`check-auto-fallback.mjs`）。
+- [x] 共存回归测试主体场景：只安装 npx/npm 包、默认端口实例正在运行、PATH 本机安装优先、启动失败自动回退、固定地址切换（`scripts/check-installed-runtime.mjs`、`check-connection-switch.mjs`、`check-auto-fallback.mjs`）。
 - [ ] 补充共存回归测试缺失场景：其他端口实例正在运行、实例版本与内置版本不一致。
 
 ## 官方 dsh 运行时更新

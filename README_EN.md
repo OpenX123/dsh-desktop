@@ -30,7 +30,7 @@ So this project does exactly one thing: **put the official Web UI as-is into a n
 | Works out of the box, no environment setup | The installer carries the official runtime: no Node.js to install, no commands to type — launch and go |
 | Security and privacy are the baseline | A small boundary plus layered hardening: public interfaces only; an unhijackable update path; least-privilege permissions |
 | The Agent runs in *your* environment | Your running instance / PATH `dsh` / npx-cached package come first; macOS login-shell `PATH` alignment; `node` is always available |
-| Work continues across terminal, desktop, and remote machines | Smart mode shares `~/.dsh` with the CLI and browser; Pinned address connects to a remote `dsh` |
+| Work continues across terminal and desktop | Smart mode shares `~/.dsh` with the CLI and browser; Pinned address connects to a Web UI address you maintain |
 | Long tasks are not hostage to a browser tab | Closing the window does not quit the app; it stays in the tray |
 
 And here is what that means in the product:
@@ -39,7 +39,7 @@ And here is what that means in the product:
 - **Launch and go — no command line required.** The installer carries the official runtime: no Node.js or pnpm to install, no commands to type, and first launch is just entering an API key. For newcomers that is the whole story; if you do know the command line, Smart mode and Pinned address are right there when you want them.
 - **Security is a point we take seriously.** The client speaks only the public `dsh web` interface and never touches the official repo's internals; the window runs sandboxed with Node integration disabled and navigation locked to the official origin; in packaged builds the update source and data directories cannot be hijacked via environment variables; the renderer gets only clipboard and fullscreen permissions; external links always open in the system browser. See [Security and privacy](#security-and-privacy).
 - **Smart mode reuses the instance you are already running.** It probes in order: the official instance on `127.0.0.1:3080` → a `dsh` on PATH → an npx-cached package → the bundled runtime. Browser, CLI, and desktop then share one live Harness process, with sessions synced in real time and the Agent running inside your own complete shell environment.
-- **Pinned address connects to a `dsh` anywhere.** Another machine, a container, or a runtime you maintain: enter its address and connect directly. The client starts no runtime of its own — version, plugins, and environment stay entirely under your control.
+- **Pinned address connects to a Web UI address you maintain.** Enter its address and connect directly; the client starts no runtime of its own — version, plugins, and environment stay entirely under your control. Official dsh is currently local-only: it listens on `127.0.0.1` by default and deliberately rejects the network-exposing `0.0.0.0` bind (which would enable remote code execution), so remote or containerized instances are not an officially supported scenario.
 - **Transparent runtime status.** Five statuses describe exactly who started the runtime (reusing yours / bundled / npx-cached / installed / pinned address), and the client shows both its own version and the bundled dsh version, so troubleshooting never involves guessing.
 - **An engineered Agent execution environment.** On the bundled runtime: users without Node.js still get an Agent that can run `node`; `ELECTRON_RUN_AS_NODE` never leaks into Agent commands (otherwise Electron-based tools like `code` would fail); launching from Finder or the Dock still finds Homebrew, `~/.local/bin`, and tools exported from `~/.zshrc`. See [The Agent's execution environment on the bundled runtime](#the-agents-execution-environment-on-the-bundled-runtime).
 - **In-app updates with SHA-256 verification.** Packaged builds check GitHub Releases on launch (at most once every 12 hours), verify the download hash, then install.
@@ -60,7 +60,7 @@ Neither: the window loads the official Web UI itself, but the client is not just
 **Q: What's the main value for users?**
 
 1. **It works as installed**: the installer carries the official runtime — no Node.js, pnpm, or `dsh` CLI to install, one API key and you're chatting; the app stays in the tray and closing the window does not quit it;
-2. **It reuses the `dsh` you're already running**: Smart mode probes the running official instance, a `dsh` on PATH, then an npx-cached package — terminal, browser, and desktop share one Harness process and one `~/.dsh`, with sessions synced in real time; Pinned address mode connects straight to a remote or containerized instance;
+2. **It reuses the `dsh` you're already running**: Smart mode probes the running official instance, a `dsh` on PATH, then an npx-cached package — terminal, browser, and desktop share one Harness process and one `~/.dsh`, with sessions synced in real time; Pinned address mode connects straight to a Web UI address you maintain;
 3. **The authentic official experience**: the window is the official Web UI, so official docs, tutorials, and shortcuts all match. After an official release, Smart mode and Pinned address get it day zero; the bundled runtime follows via in-app updates.
 
 **Q: How is this different from just using a browser — besides not installing Node.js?**
@@ -144,12 +144,12 @@ If the bundled runtime cannot start, or you want to use another instance, open t
 The client serves two audiences, and both paths are first-class:
 
 - **The bundled runtime** exists so the app works the moment it is installed. Releases carry a pinned official runtime; no Node.js, pnpm, or `dsh` CLI required.
-- **Connecting to a full runtime you manage** exists for developers. Run `dsh web` in your own terminal — locally, on another machine, or in a container — and the desktop client is only the window onto it, leaving runtime version, plugins, and environment entirely under your control.
+- **Connecting to a full runtime you manage** exists for developers. Run `dsh web` in your own terminal and the desktop client is only the window onto it, leaving runtime version, plugins, and environment entirely under your control. Official dsh currently targets local use only (`127.0.0.1` by default; the network-exposing `0.0.0.0` bind is rejected), so instances on another machine or in a container are outside official support.
 
 | Mode | Best for | Behavior |
 |---|---|---|
 | **Smart** (default) | Most local users | Tries in order: the official instance on `127.0.0.1:3080` → a `dsh` on PATH → an npx-cached official package → the bundled runtime. |
-| **Pinned address** | Another machine, a container, or a manually managed runtime | Connects to the Web UI address you provide and starts no runtime of its own. |
+| **Pinned address** | A Web UI instance you maintain (official dsh currently targets local use only) | Connects to the Web UI address you provide and starts no runtime of its own. |
 
 In Smart mode, an official Web UI already running in your terminal is reused as-is — the developer path: sessions stay shared with the desktop window while the Agent runs inside your own complete shell environment.
 
@@ -172,7 +172,7 @@ Leave the Web UI address empty to return to Smart mode. Connection settings can 
 ![Connection settings in the current desktop client](docs/images/readme-settings.png)
 
 > [!TIP]
-> For a remote instance, use a trusted network and HTTPS where available. The configured address is a direct connection target, not a relay operated by this project.
+> Connecting to an instance outside this machine is currently outside official support; if you still do (for example through your own SSH tunnel), use a trusted network and HTTPS where available. The configured address is a direct connection target, not a relay operated by this project.
 
 ## Security and privacy
 
@@ -261,7 +261,7 @@ After every platform succeeds, the workflow generates SHA-256 checksums and `lat
 
 The desktop shell, Smart/Pinned address modes, shared `DSH_HOME`, tray behavior, runtime supervision, in-app updates, bundled official `@deepseek-ai/dsh`, macOS/Windows packaging, and tag-based release automation are implemented. The release workflow launches each packaged app with an empty PATH and probes its Web UI, preventing artifacts that accidentally omit the bundled runtime. Automated artifacts are still unsigned; macOS/Windows signing and notarization remain prerequisites for a warning-free general-user installation. Notifications, OS keychain integration, and voice input are also future work.
 
-Contributions and issue reports are welcome, especially around Windows behavior, remote connections, and packaging.
+Contributions and issue reports are welcome, especially around Windows behavior, Pinned address connections, and packaging.
 
 ## License
 

@@ -23,7 +23,7 @@
 ## 后果
 
 - `pnpm run dev` 构建并启动客户端；`pnpm run shot` / `pnpm run audit` / `pnpm run e2e` 驱动 Playwright 验证。`pnpm run check:picker` 验证部署后的补丁，并在 Windows 上通过 Electron Node 检查 Unicode COM 路径读取。`pnpm run smoke:package` 在空 PATH 下启动打包应用，要求它明确选择内置 CLI 并通过 `host.describe` 探针。
-- 客户端对本地 `dsh web` 与任何可达的 Web UI 实例表现一致（唯一耦合是 Web UI 源站），macOS / Windows / Linux 均支持；本地、探测和远程连接均呈现对应实例的原生官方界面。
+- 客户端对本地 `dsh web` 与任何可达的 Web UI 实例表现一致（唯一耦合是 Web UI 源站），macOS / Windows / Linux 均支持；本地与探测连接均呈现对应实例的原生官方界面。官方 dsh 目前只面向本机使用（默认监听 `127.0.0.1`，暴露到网络的 `0.0.0.0` 绑定会被拒绝），远程实例不在官方支持范围内。
 - 会话运行 Web UI 自己的组合（官方 web profile）——内容搜索、`/` 命令与技能菜单、后台任务、消息操作（fork、反馈）、plan 模式、待处理队列、agent 预设、权限选择器、goal 芯片、模型目录，以及会话标题/重命名——因为界面本身就是官方 web 应用。
 - 模型可见的身份由官方 web profile 自己的 surface prompt（"Web GUI"）设定；客户端不附加任何自己的部分。
 
