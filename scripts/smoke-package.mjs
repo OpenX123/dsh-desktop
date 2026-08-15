@@ -109,7 +109,9 @@ const emptyPath = join(smokeHome, 'empty-path')
 const childEnv = {}
 for (const [key, value] of Object.entries(process.env)) {
   const upper = key.toUpperCase()
-  if (upper === 'PATH' || upper === 'ELECTRON_RUN_AS_NODE' || upper === 'DSH_DESKTOP_SKIP_LOGIN_PATH') continue
+  // Inherited DSH_DESKTOP_* (especially DSH_DESKTOP_DSH) would be honoured
+  // under ALLOW_UNSAFE below and steal the run away from the artifact.
+  if (upper === 'PATH' || upper === 'ELECTRON_RUN_AS_NODE' || upper.startsWith('DSH_DESKTOP_')) continue
   childEnv[key] = value
 }
 // This is the one caller that runs a PACKAGED build, where every DSH_* override
@@ -130,9 +132,9 @@ const child = spawn(executable, ['--user-data-dir=' + join(smokeHome, 'chromium'
     // from Finder finds the user's tools), and that restore hands the runtime
     // resolver the developer's own npx-cached dsh — which it then prefers over
     // the bundled one, failing the assertion below on any machine that has run
-    // `npx @deepseek-ai/dsh`. What this smoke asserts is the RELEASE's runtime,
-    // not whichever dsh the person building it happens to have, so the
-    // detection is skipped here for the same reason audit.mjs skips it.
+    // `npx @deepseek-ai/dsh`. Force the artifact's bundled runtime, as audit
+    // does — this smoke asserts the RELEASE's runtime, not whichever dsh the
+    // person building it happens to have.
     DSH_DESKTOP_SKIP_INSTALLED_DSH: '1',
     PATH: emptyPath,
   },

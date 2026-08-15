@@ -91,6 +91,9 @@ jobs:
       - name: 验证运行时环境隔离 / Verify runtime environment isolation
         run: pnpm run check:runtime-env
 
+      - name: 验证内置插件接入 / Verify bundled plugin seat
+        run: pnpm run check:bundled-plugin
+
   prepare-release:
     name: 创建草稿 Release / Create draft release
     needs: validate

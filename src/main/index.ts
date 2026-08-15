@@ -22,7 +22,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, 
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, session, shell, Tray } from 'electron'
 import {
@@ -36,7 +36,7 @@ import {
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
-import { BUNDLED_PLUGIN_NAME, seatBundledPlugin, withdrawBundledPlugin } from './bundled-plugin.ts'
+import { abandonBundledPlugin, BUNDLED_PLUGIN_NAME, seatBundledPlugin, withdrawBundledPlugin } from './bundled-plugin.ts'
 import { releaseNotesCss, renderReleaseNotes, renderReleaseNotesText } from './release-notes.ts'
 import {
   executableCandidates,
@@ -619,12 +619,44 @@ function resolveBundledDsh(): DshCommand | undefined {
 }
 
 /**
- * True while the bundled plugin's bundle entry was added by THIS boot, so a
- * runtime that then never reaches readiness can have the entry taken back
- * before the retry (a plugin that throws while loading fails the whole plugin
- * tree, not just itself).
+ * Whether the client-owned seat is on the profile this boot (added now, or
+ * already present). A runtime that then never reaches readiness has the
+ * entry taken back before the retry — a plugin that throws while loading
+ * fails the whole plugin tree, not just itself, including after upgrades
+ * where the name is no longer a first write.
  */
-let bundledPluginSeatedThisBoot = false
+let bundledPluginSeatInUse = false
+/**
+ * Session-scoped: this process already withdrew a seat after a failed boot.
+ * Retries must not put the name back, or a deterministic bad plugin burns
+ * the whole launch budget without ever trying the one config that can work
+ * (the bundled runtime with no plugin).
+ */
+let bundledPluginSuppressed = false
+
+/**
+ * The bundled plugin's directory inside the client's runtime closure.
+ *
+ * Resolved the same way `resolveBundledDsh` resolves the runtime itself, and
+ * deliberately NOT by walking up from the runtime's bin path: a packaged
+ * closure is hoisted (the plugin sits beside `@deepseek-ai`), while a source
+ * checkout keeps pnpm's symlinked layout (the same arithmetic lands inside
+ * `.pnpm/@deepseek-ai+dsh@…/node_modules`, where the plugin is not). Asking
+ * the resolver instead makes the seat work in both.
+ * @returns the plugin directory, or undefined when this build carries none.
+ */
+function bundledPluginDir(): string | undefined {
+  try {
+    if (app.isPackaged) {
+      const dir = join(process.resourcesPath, 'dsh-runtime', 'node_modules', BUNDLED_PLUGIN_NAME)
+      return existsSync(join(dir, 'package.json')) ? dir : undefined
+    }
+    const anchor = join(APP_DIR, 'dsh-runtime', 'package.json')
+    return dirname(createRequire(anchor).resolve(BUNDLED_PLUGIN_NAME + '/package.json'))
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Offer — or stop offering — the bundled plugin to the profile about to boot.
@@ -638,21 +670,36 @@ let bundledPluginSeatedThisBoot = false
  * @param dsh - the resolved command this spawn is about to run.
  */
 function applyBundledPluginSeat(dsh: DshCommand): void {
-  const home = childHome()
   if (dsh.source !== 'bundled') {
-    if (withdrawBundledPlugin(home)) {
-      console.log('[desktop] bundled plugin seat withdrawn: the runtime is ' + dsh.source)
-    }
-    bundledPluginSeatedThisBoot = false
+    releaseBundledPluginSeat('the runtime is ' + dsh.source)
     return
   }
-  // The bundled branch always resolves a bin path; without one there is no
-  // closure to read the plugin out of.
-  if (dsh.binPath === undefined) return
-  // <closure>/node_modules/@deepseek-ai/dsh/lib/bin.js → <closure>/node_modules
-  const modulesDir = join(dsh.binPath, '..', '..', '..', '..')
-  const result = seatBundledPlugin(join(modulesDir, BUNDLED_PLUGIN_NAME), home)
-  bundledPluginSeatedThisBoot = result.added
+  if (bundledPluginSuppressed) {
+    releaseBundledPluginSeat('suppressed after a failed boot this session')
+    return
+  }
+  offerBundledPluginSeat()
+}
+
+function releaseBundledPluginSeat(reason: string): void {
+  if (withdrawBundledPlugin(childHome())) {
+    console.log('[desktop] bundled plugin seat withdrawn: ' + reason)
+  }
+  bundledPluginSeatInUse = false
+}
+
+function offerBundledPluginSeat(): void {
+  const home = childHome()
+  const pluginDir = bundledPluginDir()
+  if (pluginDir === undefined) {
+    if (abandonBundledPlugin(home)) {
+      console.log('[desktop] bundled plugin seat withdrawn: the runtime closure carries no bundled plugin')
+    }
+    bundledPluginSeatInUse = false
+    return
+  }
+  const result = seatBundledPlugin(pluginDir, home)
+  bundledPluginSeatInUse = result.seated
   if (result.added) console.log('[desktop] bundled plugin seated: ' + BUNDLED_PLUGIN_NAME)
   else if (!result.seated && result.error !== undefined) {
     console.log('[desktop] bundled plugin not seated: ' + result.error)
@@ -2729,6 +2776,9 @@ function connectTo(url: string, force = false): void {
   configuredTarget = url
   probeConnected = false
   childTarget = undefined
+  // This process will not spawn its bundled runtime; a leftover entry would
+  // hand the next `dsh web` (or a later local spawn) a second Service copy.
+  releaseBundledPluginSeat('connecting to a pinned address')
   if (webUi !== undefined) void webUi.stop()
   launchWindow(generation, force)
 }
@@ -2751,6 +2801,12 @@ function resetRuntimeRecoveryBudget(): void {
 /** Restore the retry budget only after one local generation proves stable. */
 function markLocalRuntimeReady(url: string): void {
   childTarget = url
+  // A first-ever DSH_HOME has no web profile until the child creates it
+  // during boot, so the pre-spawn offer is a no-op. Take the seat now so
+  // the next start actually loads the plugin (this process will not).
+  if (webUi?.lastSource === 'bundled' && !bundledPluginSeatInUse && !bundledPluginSuppressed) {
+    offerBundledPluginSeat()
+  }
   if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
   launchBudgetResetTimer = setTimeout(() => {
     if (configuredTarget === undefined && childTarget === url) launchBudget = MAX_LAUNCH_RETRIES
@@ -2792,6 +2848,10 @@ function fallbackFromProbedInstance(reason: string): boolean {
 function resolveRuntime(force = false): void {
   const generation = ++connectionGeneration
   resetRuntimeRecoveryBudget()
+  // Drop the seat until this process knows it is about to boot its own
+  // closure. The probe below may reuse someone else's instance, and a
+  // leftover name is loaded by every consumer of the shared profile.
+  releaseBundledPluginSeat('resolving which runtime will serve')
   const startLocal = async (): Promise<void> => {
     if (installedDshDetection === undefined) {
       updateLoadingStatus('正在检查本机 dsh 运行时…', 'Looking for a dsh runtime on this machine…')
@@ -3227,17 +3287,19 @@ function boot(): void {
       childTarget = undefined
       if (launchBudgetResetTimer !== undefined) clearTimeout(launchBudgetResetTimer)
       launchBudgetResetTimer = undefined
-      // A runtime that never came up on the first boot after this client
-      // offered its bundled plugin is the one failure the client can undo by
-      // itself: a plugin that throws while loading fails the WHOLE plugin
-      // tree, so the seat goes back before the retry rather than the user
-      // being left with a runtime — and a CLI sharing the profile — that no
-      // longer starts.
-      if (!wasReady && bundledPluginSeatedThisBoot) {
-        bundledPluginSeatedThisBoot = false
+      // A runtime that never came up while this client's seat was on the
+      // profile is the one failure the client can undo by itself: a plugin
+      // that throws while loading fails the WHOLE plugin tree. The seat goes
+      // back before the retry, and this session will not reseat — otherwise
+      // spawn() puts the name back and a bad plugin (especially one shipped
+      // by a client upgrade, when the entry is already present) burns the
+      // launch budget without ever trying the runtime alone.
+      if (!wasReady && bundledPluginSeatInUse) {
+        bundledPluginSeatInUse = false
         if (withdrawBundledPlugin(childHome())) {
-          console.warn('[desktop] dsh web did not start after seating ' + BUNDLED_PLUGIN_NAME
-            + '; the seat was withdrawn and the runtime is being retried')
+          bundledPluginSuppressed = true
+          console.warn('[desktop] dsh web did not start with ' + BUNDLED_PLUGIN_NAME
+            + ' seated; the seat was withdrawn and will not be offered again this session')
         }
       }
       // A user-installed runtime that never reached readiness is not a base

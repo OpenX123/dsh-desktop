@@ -20,6 +20,8 @@
  * Both are reversible in one step, which is what makes the seat safe to take
  * automatically: a plugin that throws while loading fails the WHOLE plugin
  * tree, so the client must be able to give the seat back (see `withdraw`).
+ * A missing closure copy drops the entry (and the link) rather than leaving a
+ * name official `loadProfile` will throw on.
  *
  * The seat is taken only for the client's OWN bundled runtime. The plugin's
  * live `@deepseek-ai/*` imports resolve upward from wherever it sits — inside
@@ -28,7 +30,7 @@
  * @module dsh-desktop/bundled-plugin
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** The plugin this client ships. */
@@ -77,7 +79,22 @@ function readManifest(dshHome: string): ProfileManifest | undefined {
 
 /** Same 2-space + trailing newline shape the harness writes profiles back in. */
 function writeManifest(dshHome: string, manifest: ProfileManifest): void {
-  writeFileSync(manifestPath(dshHome), JSON.stringify(manifest, undefined, 2) + '\n')
+  const dest = manifestPath(dshHome)
+  // The profile is shared with the user's own `dsh` CLI. A same-directory
+  // rename keeps a torn JSON off the next `loadProfile` if we crash mid-write.
+  const tmp = dest + '.' + String(process.pid) + '.tmp'
+  writeFileSync(tmp, JSON.stringify(manifest, undefined, 2) + '\n')
+  try {
+    renameSync(tmp, dest)
+  } catch {
+    try {
+      rmSync(dest, { force: true })
+      renameSync(tmp, dest)
+    } catch (error) {
+      rmSync(tmp, { force: true })
+      throw error
+    }
+  }
 }
 
 /**
@@ -92,20 +109,32 @@ function userOwned(manifest: ProfileManifest): boolean {
 /** Point the profile's module fallback at the closure copy, repairing a stale link. */
 function ensureLink(dshHome: string, pluginDir: string): void {
   const link = linkPath(dshHome)
-  let existing: string | undefined
+  let existing: ReturnType<typeof lstatSync> | undefined
   try {
-    // A real directory here belongs to something else; leave it alone rather
-    // than deleting a tree this client did not create.
-    if (!lstatSync(link).isSymbolicLink()) return
-    existing = readlinkSync(link)
+    existing = lstatSync(link)
   } catch {
     existing = undefined
   }
-  if (existing === pluginDir) return
+  if (existing !== undefined) {
+    // A real directory here belongs to something else; leave it alone rather
+    // than deleting a tree this client did not create — and do not pretend
+    // the seat is ready, or `loadProfile` will load (or die on) that tree.
+    if (!existing.isSymbolicLink()) throw new Error(link + ' exists and is not a symlink')
+    if (readlinkSync(link) === pluginDir) return
+  }
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
   // Windows needs a junction for an unprivileged directory link.
   symlinkSync(pluginDir, link, process.platform === 'win32' ? 'junction' : 'dir')
+}
+
+function removeOwnedLink(dshHome: string): void {
+  const link = linkPath(dshHome)
+  try {
+    if (lstatSync(link).isSymbolicLink()) rmSync(link, { force: true })
+  } catch {
+    // Nothing to remove, or a real directory this client did not create.
+  }
 }
 
 /**
@@ -116,6 +145,7 @@ function ensureLink(dshHome: string, pluginDir: string): void {
  */
 export function seatBundledPlugin(pluginDir: string, dshHome: string): SeatResult {
   if (!existsSync(join(pluginDir, 'package.json'))) {
+    abandonBundledPlugin(dshHome)
     return { seated: false, added: false, error: 'the runtime closure carries no bundled plugin' }
   }
   const manifest = readManifest(dshHome)
@@ -135,6 +165,9 @@ export function seatBundledPlugin(pluginDir: string, dshHome: string): SeatResul
     writeManifest(dshHome, manifest)
     return { seated: true, added: true }
   } catch (error) {
+    // The name must not stay listed if this client cannot actually offer the
+    // package — official `loadProfile` throws on an unresolvable bundle.
+    withdrawBundledPlugin(dshHome)
     return { seated: false, added: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
@@ -162,4 +195,15 @@ export function withdrawBundledPlugin(dshHome: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Drop the bundle entry and this client's fallback link. Used when the
+ * closure no longer carries the plugin, so a leftover name cannot take
+ * down every consumer of the shared profile.
+ */
+export function abandonBundledPlugin(dshHome: string): boolean {
+  const withdrawn = withdrawBundledPlugin(dshHome)
+  removeOwnedLink(dshHome)
+  return withdrawn
 }

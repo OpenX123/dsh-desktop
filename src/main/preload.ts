@@ -165,21 +165,23 @@ function themeFrom(el: Element | null): boolean | undefined {
   return colorIsDark(style.backgroundColor)
 }
 
+/** Whether pageLooksDark's latest answer came from real page paint. */
+let pageLookKnown = false
+
 function pageLooksDark(): boolean {
   const root = document.documentElement
   const scheme = getComputedStyle(root).colorScheme
   const hasDark = /\bdark\b/.test(scheme)
   const hasLight = /\blight\b/.test(scheme)
-  if (hasDark && !hasLight) return true
-  if (hasLight && !hasDark) return false
-  const fromRoot = themeFrom(root)
-  if (fromRoot !== undefined) return fromRoot
+  let look: boolean | undefined
+  if (hasDark && !hasLight) look = true
+  else if (hasLight && !hasDark) look = false
+  if (look === undefined) look = themeFrom(root)
   const body = document.body
-  const fromBody = themeFrom(body)
-  if (fromBody !== undefined) return fromBody
-  const fromMain = themeFrom(body?.firstElementChild ?? null)
-  if (fromMain !== undefined) return fromMain
-  return matchMedia('(prefers-color-scheme: dark)').matches
+  if (look === undefined) look = themeFrom(body)
+  if (look === undefined) look = themeFrom(body?.firstElementChild ?? null)
+  pageLookKnown = look !== undefined
+  return look ?? matchMedia('(prefers-color-scheme: dark)').matches
 }
 
 type AppearanceMode = 'system' | 'fixed'
@@ -236,16 +238,30 @@ function appearanceModeFromDialog(): AppearanceMode | undefined {
 /**
  * Prefer the official appearance control over painted color. Color vs
  * matchMedia is only a bootstrap guess, and it is wrong once themeSource is
- * pinned (matchMedia then reports the pin, not the OS).
+ * pinned (matchMedia then reports the pin, not the OS): re-reading it after
+ * the pin flips the guess to the opposite answer, and the main process
+ * pinning/unpinning in response is the fixed ↔ system loop that keeps
+ * repainting the Windows window chrome. The guess is therefore taken at most
+ * once per document and remembered; an explicit in-app appearance click or
+ * an open settings dialog overrides it and re-syncs the memory.
  */
-function currentAppearanceMode(): AppearanceMode {
+function currentAppearanceMode(dark: boolean): AppearanceMode {
   const fromDialog = appearanceModeFromDialog()
   if (fromDialog !== undefined) {
     writeRememberedAppearanceMode(fromDialog)
     return fromDialog
   }
   if (rememberedAppearanceMode !== undefined) return rememberedAppearanceMode
-  return pageLooksDark() === matchMedia('(prefers-color-scheme: dark)').matches ? 'system' : 'fixed'
+  // No real paint signal yet: pageLooksDark fell back to matchMedia, so the
+  // comparison below is trivially equal and would latch a guess with no
+  // information in it (a fixed dark choice the page applies after load would
+  // be locked to "system"). Report "system" — it never pins themeSource, so
+  // matchMedia keeps reading the real OS and the guess can still be taken
+  // correctly once the page actually paints.
+  if (!pageLookKnown) return 'system'
+  const guessed = dark === matchMedia('(prefers-color-scheme: dark)').matches ? 'system' : 'fixed'
+  writeRememberedAppearanceMode(guessed)
+  return guessed
 }
 
 function watchPageTheme(): void {
@@ -253,7 +269,7 @@ function watchPageTheme(): void {
   let lastMode: AppearanceMode | undefined
   const report = (): void => {
     const dark = pageLooksDark()
-    const mode = currentAppearanceMode()
+    const mode = currentAppearanceMode(dark)
     if (dark === lastDark && mode === lastMode) return
     lastDark = dark
     lastMode = mode

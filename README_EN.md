@@ -186,9 +186,9 @@ The official browser path is: install Node.js, run `npx @deepseek-ai/dsh web`, t
 
 A client with a self-built UI or modified source has to re-implement, or merge upstream and re-release, before it can follow an official update; this project's window loads the official Web UI directly, so whatever the official interface changes into is what the window shows. Along the update paths specifically: Smart mode reuses the `dsh` you already upgraded, and Pinned address connects to the newest instance you maintain — both are available the day the official project ships; the bundled runtime is pinned to the official version locked at release time and follows via in-app updates, slightly behind the official release.
 
-**Q: Will plugins come later? What else is planned?**
+**Q: Is there a plugin marketplace? What else is planned?**
 
-Capabilities of the official Web UI itself (skills, plugins, interactions) need no schedule from this project — they appear in the window as the official project ships. Work on the desktop shell itself is listed in the [development guide](docs/development.md#project-status) and [TODO](TODO.md): macOS/Windows signing and notarization, system notifications, OS keychain integration, voice input, an independent update channel for the bundled runtime, and periodic probing of newly appeared instances.
+When this client starts its bundled runtime, it seats the [plugin marketplace](https://github.com/bruc3van/dsh-desktop-safe-market) shipped in the installer the way official in-box bundles are seated (a `dsh.profile.bundles` entry plus a symlink into the closure). The market is off until enabled, and only then talks to the network. Reusing a running instance, a user-installed dsh, or a pinned address withdraws that entry so the closure plugin is not handed to another runtime. Capabilities of the official Web UI itself (skills, plugins, interactions) still appear in the window as the official project ships. Work on the desktop shell itself is listed in the [development guide](docs/development.md#project-status) and [TODO](TODO.md): macOS/Windows signing and notarization, system notifications, OS keychain integration, voice input, an independent update channel for the bundled runtime, and periodic probing of newly appeared instances.
 
 ## Development
 
