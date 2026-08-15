@@ -13,7 +13,9 @@ Release packages bundle a pinned version of the official `@deepseek-ai/dsh` runt
 
 The desktop client and official `dsh` use independent version numbers; there is no required correspondence between them. The connection settings page displays both the desktop version and the bundled dsh version for compatibility diagnostics.
 
-![DeepSeek Harness Desktop home screen](docs/images/readme-home.png)
+![DeepSeek Harness Desktop home screen (light theme)](docs/images/readme-home.png)
+
+![DeepSeek Harness Desktop home screen (dark theme)](docs/images/readme-home-dark.jpeg)
 
 ## Why use the desktop client?
 

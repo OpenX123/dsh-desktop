@@ -13,7 +13,9 @@ DeepSeek Harness Desktop 是一个独立的 `dsh` Electron 客户端。它在专
 
 桌面客户端与官方 `dsh` 使用各自独立的版本号，两者没有对应关系。应用的连接设置页会同时显示「桌面客户端版本」和「内置 dsh 版本」，便于排查兼容问题。
 
-![DeepSeek Harness Desktop 首页](docs/images/readme-home.png)
+![DeepSeek Harness Desktop 首页（浅色主题）](docs/images/readme-home.png)
+
+![DeepSeek Harness Desktop 首页（深色主题）](docs/images/readme-home-dark.jpeg)
 
 ## 为什么值得使用
 
