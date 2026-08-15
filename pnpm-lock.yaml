@@ -46,8 +46,8 @@ importers:
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(747a41d0547926e514b50a187dac12e4)
       dsh-desktop-safe-market:
-        specifier: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.2.tar.gz
-        version: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.2.tar.gz(aaa60b162d23099a8a17b43e72c61810)
+        specifier: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.4.tar.gz
+        version: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.4.tar.gz(aaa60b162d23099a8a17b43e72c61810)
     optionalDependencies:
       '@deepseek-ai/node-addon-landlock-run-linux-x64':
         specifier: 0.1.1
@@ -3495,9 +3495,9 @@ packages:
     resolution: {integrity: sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==}
     engines: {node: '>=12'}
 
-  dsh-desktop-safe-market@https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.2.tar.gz:
-    resolution: {integrity: sha512-pu28gkV1NbSWIO1dhKpXt+C/l2zqjwDkuKqI6CN3KSQ4D0u2DIg6V9Q/A4+kljcMFR0RTx9Bw6ER3cBjfJAgBg==, tarball: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.2.tar.gz}
-    version: 0.1.2
+  dsh-desktop-safe-market@https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.4.tar.gz:
+    resolution: {integrity: sha512-P1vRa86TY5Pn1tF0LsUkoMXYni/P7VJ+gAGg/zH+u5LtAxJ2rNYeDKv57qRN+JUK+rSrTEhiJNaKFw4qI+E5+Q==, tarball: https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.4.tar.gz}
+    version: 0.1.4
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.1
       '@deepseek-ai/dsh-api-remotes': '>=0.1.0-rc.1'
@@ -8840,7 +8840,7 @@ snapshots:
 
   dotenv@16.4.5: {}
 
-  dsh-desktop-safe-market@https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.2.tar.gz(aaa60b162d23099a8a17b43e72c61810):
+  dsh-desktop-safe-market@https://github.com/bruc3van/dsh-desktop-safe-market/archive/refs/tags/v0.1.4.tar.gz(aaa60b162d23099a8a17b43e72c61810):
     dependencies:
       zod: 4.4.3
     optionalDependencies:
