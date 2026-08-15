@@ -24,12 +24,14 @@ import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, session, shell, Tray } from 'electron'
 import {
   AUTO_CHECK_DELAY_MS,
   DesktopUpdater,
+  RELEASES_PAGE_URL,
   defaultGithubApiUrl,
   defaultUpdateFeedUrl,
+  describeFetchError,
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
@@ -1759,8 +1761,10 @@ function openSettingsWindow(): void {
 
 /**
  * The tray (menu-bar) seat: closing the window keeps the client running.
- * macOS convention: left-click reopens the window, right-click shows the
- * menu; Windows/Linux show the menu on left-click (platform default).
+ * macOS and Windows agree on the gesture — left-click reopens the window,
+ * right-click shows the menu. Only the way the menu is attached differs, and
+ * Linux (AppIndicator) delivers no click event at all, so there the menu is
+ * the whole interaction.
  */
 function createTray(): void {
   // macOS recolours a Template image to match the menu bar automatically.
@@ -1772,8 +1776,13 @@ function createTray(): void {
   if (icon.isEmpty()) return
   tray = new Tray(icon)
   tray.setToolTip('DeepSeek Harness')
+  // Windows emits this too, and used to have nobody listening: a left-click on
+  // the notification-area icon did nothing at all, and the window could only be
+  // reached through the right-click menu. A double-click emits two clicks plus
+  // this event, and showMainWindow is idempotent, so both gestures are safe.
+  tray.on('click', showMainWindow)
+  tray.on('double-click', showMainWindow)
   if (process.platform === 'darwin') {
-    tray.on('click', showMainWindow)
     tray.on('right-click', () => { tray?.popUpContextMenu(Menu.buildFromTemplate(trayMenuTemplate())) })
   }
   refreshTrayMenu()
@@ -1967,10 +1976,38 @@ function saveUpdatePersistence(next: { dismissedVersion?: string; lastCheckedAt?
   }, unset)
 }
 
+/**
+ * The updater's transport. Node's own fetch talks to the network directly: it
+ * ignores the system proxy (and any PAC script) and trusts only its built-in CA
+ * list. That is how a Windows machine could read the update feed — the API host
+ * it happens to reach — and then fail the installer download with a bare "fetch
+ * failed", since the release assets live on a different host that only the
+ * configured proxy or the OS trust store can reach.
+ *
+ * Chromium's stack knows all of that, so net.fetch goes first. Node's fetch
+ * stays as the fallback for whatever net refuses outright, and the fallback is
+ * skipped once the caller has aborted — a timeout must not start a second
+ * request behind it.
+ */
+const updaterFetch: typeof fetch = async (input, init) => {
+  const target = input instanceof URL ? input.href : input
+  try {
+    // Chromium's stack owns a cookie jar; Node's fetch does not. An update feed
+    // and an installer download need no identity, so the transport swap must
+    // not start sending the session's cookies to GitHub.
+    return await net.fetch(target as string | Request, { credentials: 'omit', ...init })
+  } catch (error) {
+    if (init?.signal?.aborted === true) throw error
+    console.log('[desktop] update transport fell back to node fetch: ' + describeFetchError(error))
+    return await fetch(input, init)
+  }
+}
+
 function createDesktopUpdater(): DesktopUpdater {
   // Same gate as devOverride(): the packaged client keeps its own feed.
   const allowFeedOverride = !app.isPackaged || process.env.DSH_DESKTOP_ALLOW_UNSAFE === '1'
   return new DesktopUpdater({
+    fetchImpl: updaterFetch,
     currentVersion: desktopClientVersion(),
     feedUrl: defaultUpdateFeedUrl(allowFeedOverride),
     githubApiUrl: defaultGithubApiUrl(allowFeedOverride),
@@ -2452,6 +2489,18 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + 'refresh();'
   + 'setInterval(async()=>{try{const u=await(await fetch("desktop/update")).json();if(u.phase==="downloading"||u.phase==="installing")renderUpdate(u)}catch(e){}},400);'
 
+/**
+ * The "open the releases page" glyph. An in-app download can fail on a machine
+ * that reaches GitHub only through a proxy the browser has and this process
+ * does not, and the page that still works is one click away — as long as the
+ * client says where it is. Inline SVG: the settings page's CSP allows no
+ * external image, and a data: URI would not follow the text colour.
+ */
+const EXTERNAL_LINK_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"'
+  + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+  + '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>'
+  + '<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path></svg>'
+
 /** The connection-settings page, styled to match the loading page aesthetic. */
 function settingsPageHtml(): string {
   const icon = loadingIconTag()
@@ -2486,6 +2535,11 @@ function settingsPageHtml(): string {
     + 'button:disabled{cursor:default;opacity:.5}'
     + 'button.primary{background:#0f1115;border-color:#0f1115;color:#fff}'
     + 'button.primary:hover{opacity:.88;background:#0f1115}'
+    // The manual-download seat: a glyph rather than a fourth button, so the
+    // row keeps one primary action and this stays a way out, not a choice.
+    + '.icon-link{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;'
+    + 'border-radius:999px;color:#6e7480;text-decoration:none;transition:background .15s ease,color .15s ease}'
+    + '.icon-link:hover{background:#f5f6f7;color:#0f1115}'
     + '[hidden]{display:none}'
     + '.note{margin:8px 0 0;font-size:13px;color:#6e7480}'
     // Divider
@@ -2507,6 +2561,7 @@ function settingsPageHtml(): string {
     + 'button{border-color:#3a3d42;color:#f4f5f6}button:hover{background:#232529}'
     + 'button.primary{background:#f4f5f6;border-color:#f4f5f6;color:#17181a}'
     + 'button.primary:hover{opacity:.88;background:#f4f5f6}'
+    + '.icon-link{color:#aeb3bb}.icon-link:hover{background:#232529;color:#f4f5f6}'
     + '.note{color:#aeb3bb}.divider{border-color:#2c2e33}'
     + '.progress{background:#2c2e33}.progress span{background:#f4f5f6}'
     + '.status-text.error{color:#ff6b6b}'
@@ -2534,6 +2589,8 @@ function settingsPageHtml(): string {
     + '<div class="section">'
     + '<div class="section-title">应用更新<span class="badge">增强功能</span>'
     + '<div class="actions">'
+    + '<a class="icon-link" id="update-page" href="' + RELEASES_PAGE_URL + '" target="_blank" rel="noreferrer"'
+    + ' title="打开 GitHub 发布页手动下载" aria-label="打开 GitHub 发布页手动下载">' + EXTERNAL_LINK_SVG + '</a>'
     + '<button id="update-install" class="primary" hidden>下载并安装</button>'
     + '<button id="update-check">检查更新</button>'
     + '<button id="update-dismiss" hidden>稍后提醒</button>'

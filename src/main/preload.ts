@@ -292,6 +292,19 @@ function watchPageTheme(): void {
 
 const ENHANCE_ID = 'dsh-desktop-enhance'
 const UPDATE_ID = 'dsh-desktop-update'
+const RELEASES_PAGE_URL = 'https://github.com/bruc3van/dsh-desktop/releases'
+
+/**
+ * The "open the releases page" glyph, beside 检查更新. An in-app download can
+ * fail on a machine that reaches GitHub only through a proxy this process does
+ * not use, and the manual page is then the way out. Inline SVG so it follows
+ * the official theme's text colour; the anchor leaves through the main
+ * process's window-open handler, i.e. in the system browser.
+ */
+const EXTERNAL_LINK_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"'
+  + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+  + '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>'
+  + '<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path></svg>'
 
 function visible(el: Element): boolean {
   const rect = el.getBoundingClientRect()
@@ -398,6 +411,12 @@ function injectEnhance(panel: Element): void {
       '#' + UPDATE_ID + ' .dsh-enhance-button:disabled{cursor:default;opacity:.55}',
       '#' + UPDATE_ID + ' .dsh-enhance-switch{background:var(--dsw-alias-label-primary,#0F1115);border-color:var(--dsw-alias-label-primary,#0F1115);color:var(--dsw-alias-bg-layer-1,#fff)}',
       '#' + UPDATE_ID + ' .dsh-enhance-switch:hover{opacity:.88;background:var(--dsw-alias-label-primary,#0F1115)}',
+      // A glyph rather than a fourth button: the row keeps one primary action,
+      // and this stays a way out rather than a competing choice.
+      '#' + UPDATE_ID + ' .dsh-update-link{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;'
+        + 'border-radius:999px;text-decoration:none;color:var(--dsw-alias-label-secondary,#6E7480);'
+        + 'transition:background .15s ease,color .15s ease}',
+      '#' + UPDATE_ID + ' .dsh-update-link:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7);color:var(--dsw-alias-label-primary,#0F1115)}',
     ].join('')
     document.head.appendChild(style)
   }
@@ -477,6 +496,7 @@ function updateCopy(english: boolean): {
   checking: string
   install: string
   dismiss: string
+  releases: string
   upToDate: string
   found: string
   preparing: string
@@ -500,6 +520,7 @@ function updateCopy(english: boolean): {
       checking: 'Checking…',
       install: 'Download and install',
       dismiss: 'Remind me later',
+      releases: 'Open the releases page to download manually',
       upToDate: 'You are on the latest version',
       found: 'New version available',
       preparing: 'Preparing the download…',
@@ -523,6 +544,7 @@ function updateCopy(english: boolean): {
     checking: '检查中…',
     install: '下载并安装',
     dismiss: '稍后提醒',
+    releases: '打开 GitHub 发布页手动下载',
     upToDate: '已是最新版本',
     found: '发现新版本',
     preparing: '正在准备下载…',
@@ -645,6 +667,8 @@ function injectUpdate(panel: Element, english: boolean): void {
   block.innerHTML =
     '<div class="dsh-update-title">' + copy.title + '<span class="dsh-enhance-badge">' + copy.badge + '</span>'
     + '<div class="dsh-enhance-actions">'
+    + '<a class="dsh-update-link" id="dsh-update-releases" href="' + RELEASES_PAGE_URL + '" target="_blank"'
+    + ' rel="noreferrer" title="' + copy.releases + '" aria-label="' + copy.releases + '">' + EXTERNAL_LINK_SVG + '</a>'
     + '<button class="dsh-enhance-button dsh-enhance-switch" id="dsh-update-install" type="button" hidden>' + copy.install + '</button>'
     + '<button class="dsh-enhance-button" id="dsh-update-check" type="button">' + copy.check + '</button>'
     + '<button class="dsh-enhance-button" id="dsh-update-dismiss" type="button" hidden>' + copy.dismiss + '</button>'

@@ -99,6 +99,13 @@ try {
   const settings = await app.waitForEvent('window', { timeout: 10_000 }).catch(() => null)
   check('the settings seat opens the connection window',
     settings !== null && (await settings.locator('.page-title').innerText()) === '连接设置')
+  // A download that cannot reach the release assets host leaves the manual page
+  // as the only way forward, so the update section carries a link to it.
+  const releasesHref = settings === null
+    ? null
+    : await settings.locator('#update-page').getAttribute('href').catch(() => null)
+  check('the update section links to the releases page',
+    releasesHref === 'https://github.com/bruc3van/dsh-desktop/releases', String(releasesHref))
   await settings?.close().catch(() => {})
 
   // Retry must re-run the connection rather than stall on the loading

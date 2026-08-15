@@ -106,7 +106,7 @@ await esbuild.build({
   outfile: updaterBundle,
   logLevel: 'silent',
 })
-const { compareVersions } = await import(pathToFileURL(updaterBundle).href)
+const { compareVersions, describeFetchError } = await import(pathToFileURL(updaterBundle).href)
 const orderings = [
   // Numeric prerelease identifiers rank by value: the string comparison this
   // replaced put rc.10 BELOW rc.9 and reported a newer build as current.
@@ -130,6 +130,19 @@ for (const [left, right, expected] of orderings) {
   }
 }
 console.log('✓ compareVersions orders core, release-over-prerelease, and numeric prerelease ranks')
+
+// A transport failure arrives as a bare "fetch failed"; the reason a person can
+// act on sits on `cause`, which is what a Windows download failure reported.
+const dnsFailure = new TypeError('fetch failed')
+dnsFailure.cause = Object.assign(new Error('getaddrinfo ENOTFOUND objects.githubusercontent.com'), { code: 'ENOTFOUND' })
+const described = describeFetchError(dnsFailure)
+if (!described.includes('fetch failed') || !described.includes('ENOTFOUND objects.githubusercontent.com')) {
+  throw new Error('describeFetchError dropped the cause: ' + JSON.stringify(described))
+}
+if (describeFetchError(new Error('下载更新超时')) !== '下载更新超时') {
+  throw new Error('describeFetchError rewrote a plain message')
+}
+console.log('✓ a failed fetch reports the cause behind "fetch failed"')
 
 // Release notes reach three surfaces: two HTML cards and one native dialog.
 const notesBundle = join(work, 'release-notes.mjs')
@@ -324,6 +337,15 @@ try {
   })
   if (notes.items !== 2 || notes.code !== 1 || notes.text.includes('###')) {
     throw new Error('release notes were not rendered as Markdown: ' + JSON.stringify(notes))
+  }
+  // The way out when the in-app download cannot reach the assets host: the
+  // link must be on the card itself, and must leave for the system browser.
+  const releasesLink = await available.window.evaluate(() => {
+    const el = document.getElementById('dsh-update-releases')
+    return el === null ? null : { href: el.getAttribute('href'), target: el.getAttribute('target') }
+  })
+  if (releasesLink?.href !== 'https://github.com/bruc3van/dsh-desktop/releases' || releasesLink.target !== '_blank') {
+    throw new Error('manual-download link missing from the update card: ' + JSON.stringify(releasesLink))
   }
   const installed = await available.window.evaluate(() => window.desktop.update.install())
   if (!installed.started) throw new Error('dry-run install failed: ' + JSON.stringify(installed))

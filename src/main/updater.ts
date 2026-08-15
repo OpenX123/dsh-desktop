@@ -107,6 +107,9 @@ function envMs(name: string, fallback: number): number {
 const DEFAULT_FEED_URL = 'https://github.com/bruc3van/dsh-desktop/releases/latest/download/latest.json'
 const DEFAULT_GITHUB_API = 'https://api.github.com/repos/bruc3van/dsh-desktop/releases/latest'
 
+/** Where a person goes when the in-app download cannot reach the assets host. */
+export const RELEASES_PAGE_URL = 'https://github.com/bruc3van/dsh-desktop/releases'
+
 const GITHUB_DOWNLOAD_HOSTS = new Set([
   'github.com',
   'objects.githubusercontent.com',
@@ -200,6 +203,32 @@ export function platformKey(platform: NodeJS.Platform, arch: string): string | u
   if (platform === 'linux' && arch === 'arm64') return 'linux-arm64'
   if (platform === 'linux') return 'linux-x64'
   return undefined
+}
+
+/**
+ * A transport failure reaches this process as a bare "fetch failed" — undici
+ * puts the reason (DNS, TLS, a reset connection, a refused proxy) on `cause`,
+ * one or more levels down. Reporting only the top line left a Windows user
+ * whose check succeeded and whose download did not with a message nothing
+ * could be done about, so the chain is flattened into the reason itself.
+ */
+export function describeFetchError(error: unknown): string {
+  const parts: string[] = []
+  let current: unknown = error
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    const code = (current as NodeJS.ErrnoException).code
+    const text = current.message === '' ? current.name : current.message
+    const withCode = typeof code === 'string' && code !== '' && !text.includes(code)
+      ? text + '（' + code + '）'
+      : text
+    if (!parts.includes(withCode)) parts.push(withCode)
+    current = (current as { cause?: unknown }).cause
+  }
+  if (parts.length === 0) {
+    const text = String(error)
+    return text === '' ? '未知错误' : text
+  }
+  return parts.join(' ← ')
 }
 
 export function parseSha256Sums(text: string): Map<string, string> {
@@ -386,7 +415,7 @@ export class DesktopUpdater {
       this.markChecked()
       return { hasUpdate: true, info }
     } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err)
+      this.error = describeFetchError(err)
       this.setPhase('error')
       return { hasUpdate: false }
     } finally {
@@ -460,7 +489,7 @@ export class DesktopUpdater {
       return { started: true }
     } catch (err) {
       this.progress = null
-      this.error = err instanceof Error ? err.message : String(err)
+      this.error = describeFetchError(err)
       this.setPhase('error')
       return { started: false, error: this.error }
     }
@@ -605,7 +634,13 @@ export class DesktopUpdater {
       }
     } catch (err) {
       if (controller.signal.aborted) throw new Error('下载更新超时')
-      throw err
+      // Everything this block throws itself already says 下载更新失败; anything
+      // else is the transport or the disk, and arrives as a bare "fetch failed"
+      // that reads like a dead button. Name it, and point at the page that
+      // still works when the release-assets host does not.
+      const message = err instanceof Error ? err.message : ''
+      if (message.startsWith('下载更新失败')) throw err
+      throw new Error('下载更新失败：' + describeFetchError(err) + '（可前往 GitHub Releases 手动下载）')
     } finally {
       clearTimeout(overallTimer)
       clearTimeout(idleTimer)
