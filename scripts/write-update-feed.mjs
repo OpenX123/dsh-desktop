@@ -3,7 +3,7 @@
  * SHA256SUMS.txt. Used by the release workflow after every platform upload.
  *
  * Usage:
- *   node scripts/write-update-feed.mjs --dir assets --version 0.1.6 --out assets/latest.json
+ *   node scripts/write-update-feed.mjs --dir assets --version 0.1.7 --out assets/latest.json
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'

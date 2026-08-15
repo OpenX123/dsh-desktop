@@ -864,6 +864,8 @@ let mainWindow: BrowserWindow | null = null
 let mainWindowRequested = false
 /** Whether the main window still shows the local loading document. */
 let loadingDocumentActive = false
+/** Invalidates delayed loading hints from an older startup/reconnect surface. */
+let loadingHintGeneration = 0
 /** Whether the main window shows the local connection-failure document. */
 let errorDocumentActive = false
 let settingsWindow: BrowserWindow | null = null
@@ -1036,6 +1038,10 @@ function scheduleWindowHealthCheck(reason: string, delayMs = 1_000): void {
 
 /** The official DeepSeek Harness logo: rounded-corner dark tile with the white glyph. */
 const ICON_PNG = join(APP_DIR, 'resources', 'icon-app.png')
+/** Windows taskbar variant: same tile with a larger glyph for small icon sizes. */
+const WINDOW_ICON_PNG = process.platform === 'win32'
+  ? join(APP_DIR, 'resources', 'icon-win.png')
+  : ICON_PNG
 
 /**
  * The logo as an inline data URI, or an empty tag when the resource cannot be
@@ -1056,7 +1062,7 @@ function loadingPageUrl(): string {
   const chinese = app.getLocale().toLowerCase().startsWith('zh')
   const title = chinese ? '正在启动 DeepSeek Harness' : 'Starting DeepSeek Harness'
   const detail = chinese ? '正在准备本地服务…' : 'Preparing the local service…'
-  const hint = chinese ? '首次启动可能需要几秒钟' : 'The first launch may take a few seconds'
+  const hint = chinese ? '首次启动通常需要 10–20 秒' : 'The first launch usually takes 10–20 seconds'
   // The only connection seat reachable while the Web UI itself cannot load:
   // the official settings dialog (and its enhanced 连接 block) needs a page.
   const action = chinese ? 'Web UI 连接…' : 'Web UI connection…'
@@ -1088,9 +1094,37 @@ function loadingPageUrl(): string {
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
+/** Reassure the user as a first launch moves beyond its usual 10–20 seconds. */
+function scheduleLoadingHints(): void {
+  const generation = ++loadingHintGeneration
+  const chinese = app.getLocale().toLowerCase().startsWith('zh')
+  const steps = chinese
+    ? [
+        [10_000, '正在初始化运行时，通常还需要几秒钟…'],
+        [20_000, '仍在准备中，首次启动有时会超过 20 秒…'],
+        [35_000, '正在等待本地服务就绪，请继续稍候…'],
+      ] as const
+    : [
+        [10_000, 'Initializing the runtime — usually just a few more seconds…'],
+        [20_000, 'Still preparing — the first launch can sometimes take over 20 seconds…'],
+        [35_000, 'Waiting for the local service to become ready…'],
+      ] as const
+  for (const [delay, message] of steps) {
+    setTimeout(() => {
+      const window = mainWindow
+      if (generation !== loadingHintGeneration || !loadingDocumentActive
+        || window === null || window.isDestroyed() || window.webContents.isDestroyed()) return
+      void window.webContents.executeJavaScript(
+        `document.querySelector('.hint')?.replaceChildren(${JSON.stringify(message)});`,
+        true,
+      ).catch(() => {})
+    }, delay).unref()
+  }
+}
+
 /**
  * Update the loading document's status line. The 'failed' state also withdraws
- * the activity indicator and the "may take a few seconds" hint: a launch that
+ * the activity indicator and the estimated-time hint: a launch that
  * cannot proceed must not keep animating, nor keep promising progress. It
  * reveals the connection button instead — with no page, the official settings
  * dialog (which now owns the connection form) cannot be reached.
@@ -1541,7 +1575,7 @@ function createWindow(): void {
     // would overlap it. The standard title bar keeps the traffic lights away
     // from the page on macOS and renders the official icon on Windows/Linux.
     titleBarStyle: 'default',
-    icon: ICON_PNG,
+    icon: WINDOW_ICON_PNG,
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -1652,6 +1686,7 @@ function createWindow(): void {
   pagePrefersDark = undefined
   pageAppearanceMode = undefined
   void mainWindow.loadURL(loadingPageUrl()).catch(() => {})
+  scheduleLoadingHints()
 }
 
 /**
@@ -1687,7 +1722,7 @@ function openSettingsWindow(): void {
     // Without this the window keeps Electron's own default icon in its title
     // bar and taskbar entry — the one place the client still looked like a
     // generic Electron app.
-    icon: ICON_PNG,
+    icon: WINDOW_ICON_PNG,
     resizable: true,
     minimizable: false,
     maximizable: false,
@@ -1722,8 +1757,10 @@ function openSettingsWindow(): void {
  */
 function createTray(): void {
   // macOS recolours a Template image to match the menu bar automatically.
-  // Windows renders the source pixels as-is, so choose the opposite-colour
-  // glyph for its current system theme and update it when that theme changes.
+  // Windows renders the source pixels as-is. Always use the white glyph there:
+  // nativeTheme follows the app colour mode, which can be light while the
+  // Windows taskbar is dark, and would otherwise select an unreadable black
+  // icon for that supported mixed-theme configuration.
   const icon = trayImage()
   if (icon.isEmpty()) return
   tray = new Tray(icon)
@@ -1736,17 +1773,8 @@ function createTray(): void {
 }
 
 function trayImage(): Electron.NativeImage {
-  const iconName = process.platform === 'win32' && nativeTheme.shouldUseDarkColors
-    ? 'iconTrayWhite.png'
-    : 'iconMenuTemplate.png'
+  const iconName = process.platform === 'win32' ? 'iconTrayWhite.png' : 'iconMenuTemplate.png'
   return nativeImage.createFromPath(join(APP_DIR, 'resources', iconName))
-}
-
-/** Keep the Windows tray glyph legible when the system switches theme. */
-function syncTrayImage(): void {
-  if (tray === null || process.platform !== 'win32') return
-  const icon = trayImage()
-  if (!icon.isEmpty()) tray.setImage(icon)
 }
 
 function trayMenuTemplate(): Electron.MenuItemConstructorOptions[] {
@@ -1882,6 +1910,7 @@ function showLoadingDocument(): void {
   pagePrefersDark = undefined
   pageAppearanceMode = undefined
   void window.loadURL(loadingPageUrl()).catch(() => {})
+  scheduleLoadingHints()
 }
 
 let cachedDesktopVersion: string | undefined
@@ -2900,7 +2929,6 @@ if (!gotLock) {
     // Paint immediately. Runtime probing/boot continues behind this one window
     // and replaces the loading document with the official Web UI when ready.
     nativeTheme.on('updated', syncWindowBackgrounds)
-    nativeTheme.on('updated', syncTrayImage)
     ipcMain.on('desktop:theme', onRendererTheme)
     mainWindowRequested = true
     createWindow()

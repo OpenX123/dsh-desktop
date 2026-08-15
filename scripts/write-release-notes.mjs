@@ -3,7 +3,7 @@
  *
  * Usage:
  *   node scripts/write-release-notes.mjs \
- *     --version 0.1.6 \
+ *     --version 0.1.7 \
  *     --changelog CHANGELOG.md \
  *     --out release-notes.md \
  *     [--changes-out release-changes.md]

@@ -71,7 +71,10 @@ dmg:
   writeUpdateInfo: false
 
 win:
-  icon: resources/icon-app.png
+  # The taskbar renders app icons very small; this variant preserves the same
+  # dark tile while giving the white glyph enough visual weight beside native
+  # Windows apps. macOS and in-app branding continue to use their own assets.
+  icon: resources/icon-win.png
   target:
     - nsis
 
