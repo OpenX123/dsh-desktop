@@ -2,41 +2,46 @@
 
 [中文](README.md) | English
 
-**Use DeepSeek Harness like a desktop app — with the official Web UI, your existing sessions, and your local workspace in one focused window.**
+**Put DeepSeek Harness on your desktop as-is: the official Web UI itself, day-zero official features.**
 
-DeepSeek Harness Desktop is an independent Electron client for `dsh`. It starts or connects to the official `dsh Web UI` and displays that UI directly, so you get the complete Harness experience without keeping another browser tab open.
+DeepSeek Harness Desktop is an independent Electron client for `dsh`. It starts or connects to the official `dsh Web UI` and displays that UI directly in a focused native window, so you get the complete Harness experience without keeping another browser tab open. It is not a look-alike and not a rewrite — what you see is the official product itself.
 
 > [!IMPORTANT]
 > **This is an unofficial, community-maintained third-party project.** It is not developed, published, endorsed, or supported by DeepSeek and does not represent DeepSeek. `DeepSeek`, `DeepSeek Harness`, `dsh`, and related names, logos, and trademarks belong to their respective owners. Report desktop-client issues to this repository, not to DeepSeek support.
 
 Release packages bundle a pinned version of the official `@deepseek-ai/dsh` runtime. End users do not need to install Node.js, pnpm, or the `dsh` CLI separately. The desktop shell, installers, connection enhancements, and release signatures are independently maintained by this project and are not part of the official runtime.
 
-The desktop client and official `dsh` use independent version numbers; there is no required correspondence between them. The connection settings page displays both the desktop version and bundled dsh version for compatibility diagnostics.
+The desktop client and official `dsh` use independent version numbers; there is no required correspondence between them. The connection settings page displays both the desktop version and the bundled dsh version for compatibility diagnostics.
 
 ![DeepSeek Harness Desktop home screen](docs/images/readme-home.png)
 
 ## Why use the desktop client?
 
-- **The real Harness experience** — the app loads the official Web UI itself. Projects, conversations, tasks, models, permissions, goals, plans, skills, and slash commands behave exactly as they do in the official product.
-- **Desktop connection enhancements** — a clearly labeled connection card is added to the official settings surface, with a separate native connection window. These additions belong to this project and are not official Web UI features.
-- **Start with less setup** — in Smart mode, the app reuses an official Web UI already running on your computer. If none is found, it starts `dsh web` for you in the background, using your own installed `dsh` when you have one and the bundled runtime otherwise.
-- **Keep your work continuous** — local mode uses the same `~/.dsh` data as the `dsh` CLI and browser Web UI. Your conversations, titles, credentials, and model configuration stay together.
-- **Connect wherever your Agent runs** — use the local runtime for everyday work, or point the app at another reachable `dsh Web UI` instance.
-- **A desktop-native home for long-running work** — close the window without stopping the app, reopen it from the system tray, and keep Agent sessions separate from browser clutter.
-- **A small, auditable integration boundary** — the client uses only the public `dsh web` CLI and `/api` contract. It does not patch the official repository or import private Harness internals.
+Start from what Harness actually is. Its value is the official product itself: the official UI and runtime keep evolving quickly, and that is exactly what users want — unchanged, in one focused desktop window. Rather than writing another interface and re-doing every new official feature by hand, the window simply shows the official interface itself. And what users ask for is a *desktop*, not *another app*: a focused window, tray persistence, system integration, and an execution environment suited to long-running work.
 
-## What you can do
+So this project does exactly one thing: **put the official Web UI as-is into a native window, and spend all engineering effort on the connection layer, security, and the execution environment.** The benefits of this approach hold on their own:
 
-Use the client for the same work you already give to an Agent:
+| What users need | Our design choice |
+|---|---|
+| All of Harness's capabilities, nothing missing | The window shows the official Web UI itself — no interface rewrite |
+| Day-zero official features | Delivery is decoupled from our own releases: Smart mode reuses the newest `dsh` you already have; the bundled runtime is only a fallback |
+| Works out of the box, no environment setup | The installer carries the official runtime: no Node.js to install, no commands to type — launch and go |
+| Security and privacy are the baseline | A small boundary plus layered hardening: public interfaces only; an unhijackable update path; least-privilege permissions |
+| The Agent runs in *your* environment | Your running instance / PATH `dsh` / npx-cached package come first; macOS login-shell `PATH` alignment; `node` is always available |
+| Work continues across terminal, desktop, and remote machines | Smart mode shares `~/.dsh` with the CLI and browser; Pinned address connects to a remote `dsh` |
+| Long tasks are not hostage to a browser tab | Closing the window does not quit the app; it stays in the tray |
 
-- open a local project and let the Agent read or modify workspace files;
-- keep multiple conversations and find previous sessions from the sidebar;
-- monitor background tasks and long-running goals;
-- choose a model and adjust permissions before sending a request;
-- attach files, use plans, queue follow-up work, and invoke available skills or `/` commands;
-- manage your API key, Agent preset, and connection from the settings UI.
+And here is what that means in the product:
 
-This interface is not a reimplementation. It is the official Web UI running inside a secure Electron window, so new official UI capabilities can reach the desktop without maintaining a second product surface.
+- **Day-zero official features.** The window loads the official Web UI itself, not a look-alike. When the official interface adds features or changes interactions, the official docs, tutorials, and shortcuts all match exactly — no "the tutorial shows something your screen doesn't". When the official project ships, upgrade the `dsh` you already have (or let the in-app update push the bundled runtime) and the desktop client follows with zero changes and zero waiting.
+- **Launch and go — no command line required.** The installer carries the official runtime: no Node.js or pnpm to install, no commands to type, and first launch is just entering an API key. For newcomers that is the whole story; if you do know the command line, Smart mode and Pinned address are right there when you want them.
+- **Security is a point we take seriously.** The client speaks only the public `dsh web` interface and never touches the official repo's internals; the window runs sandboxed with Node integration disabled and navigation locked to the official origin; in packaged builds the update source and data directories cannot be hijacked via environment variables; the renderer gets only clipboard and fullscreen permissions; external links always open in the system browser. See [Security and privacy](#security-and-privacy).
+- **Smart mode reuses the instance you are already running.** It probes in order: the official instance on `127.0.0.1:3080` → a `dsh` on PATH → an npx-cached package → the bundled runtime. Browser, CLI, and desktop then share one live Harness process, with sessions synced in real time and the Agent running inside your own complete shell environment.
+- **Pinned address connects to a `dsh` anywhere.** Another machine, a container, or a runtime you maintain: enter its address and connect directly. The client starts no runtime of its own — version, plugins, and environment stay entirely under your control.
+- **Transparent runtime status.** Five statuses describe exactly who started the runtime (reusing yours / bundled / npx-cached / installed / pinned address), and the client shows both its own version and the bundled dsh version, so troubleshooting never involves guessing.
+- **An engineered Agent execution environment.** On the bundled runtime: users without Node.js still get an Agent that can run `node`; `ELECTRON_RUN_AS_NODE` never leaks into Agent commands (otherwise Electron-based tools like `code` would fail); launching from Finder or the Dock still finds Homebrew, `~/.local/bin`, and tools exported from `~/.zshrc`. See [The Agent's execution environment on the bundled runtime](#the-agents-execution-environment-on-the-bundled-runtime).
+- **In-app updates with SHA-256 verification.** Packaged builds check GitHub Releases on launch (at most once every 12 hours), verify the download hash, then install.
+- **A self-checking release pipeline.** An empty-PATH package smoke test (the artifact must really use its bundled runtime), an update-feed fixture, runtime-environment isolation checks, the Win32 picker patch, and a real-request e2e run — a set of gates that rejects artifacts that build but don't work. See [Development](#development).
 
 ## Quick start
 
@@ -44,7 +49,7 @@ This interface is not a reimplementation. It is the official Web UI running insi
 
 Download the package for your system from [GitHub Releases](https://github.com/bruc3van/dsh-desktop/releases) and launch it. Release builds include the official `dsh` runtime, require no development tools, and do not run an npm install on first launch.
 
-Automated packages are currently unsigned on macOS and Windows. The operating system may show a first-launch security warning; until signing and notarization are configured, this remains a known limitation of the “download and run” experience. Download only from this repository and verify the included `SHA256SUMS.txt`.
+Automated packages are currently unsigned on macOS and Windows. The operating system may show a first-launch security warning; until signing and notarization are configured, this remains a known limitation of the "download and run" experience. Download only from this repository and verify the included `SHA256SUMS.txt`.
 
 #### If the operating system blocks the first launch
 
@@ -137,7 +142,7 @@ Leave the Web UI address empty to return to Smart mode. Connection settings can 
 > [!TIP]
 > For a remote instance, use a trusted network and HTTPS where available. The configured address is a direct connection target, not a relay operated by this project.
 
-## Data and privacy
+## Security and privacy
 
 The desktop shell and the Harness runtime keep separate responsibilities:
 
@@ -148,9 +153,14 @@ The desktop shell and the Harness runtime keep separate responsibilities:
 
 Override these locations with `DSH_HOME` and `DSH_DESKTOP_HOME` respectively.
 
-The Electron window runs with context isolation and sandboxing enabled, Node integration disabled, navigation restricted to the configured Web UI origin, and external links opened in the system browser. The project never modifies the official Harness repository.
+The client's security strategy is a small boundary plus layered hardening:
 
-Use of this client remains subject to the terms and privacy policies of DeepSeek, model providers, and any connected service. Users and those services are responsible for API keys, model requests, charges, generated content, and Agent actions on local files or commands. The software is provided “as is” under the MIT License, without warranties of fitness, data preservation, service availability, model output, or third-party cost, except where applicable law requires otherwise.
+- **A small boundary.** The client uses only the public `dsh web` CLI and `/api` contract. It does not patch the official repository or import private Harness internals.
+- **Window hardening.** The Electron window runs with context isolation and sandboxing enabled, Node integration disabled, navigation restricted to the configured Web UI origin, and external links opened in the system browser.
+- **An update path that cannot be hijacked.** In packaged builds, the update source and GitHub API addresses, the data directories (`DSH_HOME`, `DSH_DESKTOP_HOME`), and the connection-probe switch cannot be overridden by environment variables. The updater validates installer filenames in the update manifest against path traversal outside the download directory.
+- **Least-privilege permissions.** Renderer permission requests are limited to clipboard writes and fullscreen; camera, microphone, and other device permissions are rejected. Unauthorized in-page navigation and new-window redirects are blocked; only trusted origins are allowed.
+
+Use of this client remains subject to the terms and privacy policies of DeepSeek, model providers, and any connected service. Users and those services are responsible for API keys, model requests, charges, generated content, and Agent actions on local files or commands. The software is provided "as is" under the MIT License, without warranties of fitness, data preservation, service availability, model output, or third-party cost, except where applicable law requires otherwise.
 
 ## Desktop behavior
 
@@ -170,7 +180,7 @@ On the bundled runtime the Agent's capabilities match official `dsh` — same ru
 - **`node` is always available.** Packaged builds publish Electron's own Node under the name `node` in `~/.dsh-desktop/bin` and **append** that directory to the runtime's `PATH`. A user who never installed Node still gets an Agent that can run `node script.js`; a user who did keeps their own version first. The directory provides no `npm`/`npx` — for those (starting an MCP server with `npx`, say) install Node.js or use Pinned address mode. The shim works by setting `ELECTRON_RUN_AS_NODE` so Electron runs as Node, so **processes started through it, and their own children,** carry that variable: a node script that goes on to launch an Electron-based tool must clear it, or use a real Node.js install.
 - **The Agent's environment stays clean.** The bundled runtime relies on `ELECTRON_RUN_AS_NODE` to run on Electron's Node, which is an implementation detail of how it is launched. The client removes that variable once the runtime starts and re-attaches it only where the runtime itself respawns Node (the native folder picker, the Windows ACL sandbox runner), so the Agent's own commands never inherit it — otherwise every Electron-based tool the Agent runs (`code`, for instance) would fail.
 - **File permissions.** The app does not enable the App Sandbox, so the Agent's file access is that of an ordinary user process. On macOS the first access to Desktop, Documents, or Downloads is prompted in this app's name, and grants are recorded per application — permissions already given to your terminal do not carry over. The system prompt states the purpose.
-- **Pinned version.** The bundled runtime ships with the installer and cannot be upgraded on its own. Use Pinned address mode with a runtime you maintain to track the latest official release.
+- **Pinned version.** The bundled runtime ships with the installer and cannot be upgraded on its own. To track the latest official release, use Pinned address mode with a runtime you maintain — this is the developer path to day-zero official features.
 
 ## Development
 
@@ -190,6 +200,8 @@ pnpm run shot:readme    # refresh the privacy-safe README screenshots
 pnpm run e2e            # send a real prompt and verify the streamed response
 ```
 
+In addition, `scripts/` contains a family of regression checks for connection and runtime behavior: `check:connection` (mode switching), `check:installed-runtime` (installed runtime), `check:runtime-resolution` (runtime resolution), `check:auto-fallback` (loss-of-instance fallback), and `check:error-surface` (error UI).
+
 `pnpm run e2e` needs a valid API key. The production window loads the official Web UI; this repository does not maintain a second product renderer. `pnpm run check:updater` drives a local update-feed fixture through check, hash verification, and dismiss.
 
 For the process model, trust boundary, and design decisions, see [Desktop client architecture](docs/desktop-client-architecture.md).
@@ -199,8 +211,8 @@ For the process model, trust boundary, and design decisions, see [Desktop client
 To release a version, push its tag directly. GitHub Actions treats the tag as the single version source and writes it to `package.json` during the build:
 
 ```sh
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions validates the tag format, uses the tag as the release version, then builds:
@@ -223,4 +235,4 @@ Contributions and issue reports are welcome, especially around Windows behavior,
 
 [MIT](LICENSE)
 
-The MIT License covers only code and assets maintained in this repository. The bundled official `@deepseek-ai/dsh` runtime and other third-party dependencies remain under their own licenses. “DeepSeek Harness” is used in the project name only to identify the compatible product; it does not imply an official relationship.
+The MIT License covers only code and assets maintained in this repository. The bundled official `@deepseek-ai/dsh` runtime and other third-party dependencies remain under their own licenses. "DeepSeek Harness" is used in the project name only to identify the compatible product; it does not imply an official relationship.
