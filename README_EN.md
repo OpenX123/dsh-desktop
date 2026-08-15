@@ -19,7 +19,7 @@ The desktop client and official `dsh` use independent version numbers; there is 
 
 Start from what Harness actually is. Its value is the official product itself: the official UI and runtime keep evolving quickly, and that is exactly what users want — unchanged, in one focused desktop window. Rather than writing another interface and re-doing every new official feature by hand, the window simply shows the official interface itself. And what users ask for is a *desktop*, not *another app*: a focused window, tray persistence, system integration, and an execution environment suited to long-running work.
 
-So this project does exactly one thing: **put the official Web UI as-is into a native window, and spend all engineering effort on the connection layer, security, and the execution environment.** The benefits of this approach hold on their own:
+So this project does exactly one thing: **put the official Web UI as-is into a native window, and spend all engineering effort on the connection layer, security, the execution environment, and the desktop experience — tray persistence, launch-and-go, smart connection, in-app updates.** The benefits of this approach hold on their own:
 
 | What users need | Our design choice |
 |---|---|
