@@ -33,6 +33,7 @@ import {
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
+import { releaseNotesCss, renderReleaseNotes, renderReleaseNotesText } from './release-notes.ts'
 import {
   executableCandidates,
   normalizePathEntry,
@@ -1735,7 +1736,13 @@ function openSettingsWindow(): void {
   })
   installPageContextMenu(settingsWindow.webContents)
   settingsWindow.on('closed', () => { settingsWindow = null })
-  settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // The page carries links now — the ones inside rendered release notes — and
+  // they must leave for the system browser rather than do nothing at all. The
+  // window itself still never navigates anywhere (see will-navigate below).
+  settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url)
+    return { action: 'deny' }
+  })
   settingsWindow.webContents.on('will-navigate', (event, targetUrl) => {
     // Compare parsed origin + path prefix rather than the raw string: a prefix
     // test on the whole URL is decided by spelling (`...token/x` vs a
@@ -2098,7 +2105,9 @@ let updateDialogOpen = false
 function showUpdateAvailableDialog(info: UpdateInfo): void {
   if (devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT') || updateDialogOpen) return
   const copy = updateDialogCopy()
-  const notes = (info.notes ?? '').trim()
+  // A system dialog takes no markup, so the Markdown is rendered down to text
+  // rather than printed with its '###' and backticks intact.
+  const notes = renderReleaseNotesText(info.notes ?? '')
   const detail = (notes === '' ? '' : notes.slice(0, 800) + (notes.length > 800 ? '…' : '') + '\n\n')
     + 'v' + info.currentVersion + ' → v' + info.availableVersion
   const options: Electron.MessageBoxOptions = {
@@ -2176,21 +2185,39 @@ async function installDesktopUpdate(): Promise<{ started: boolean; error?: strin
   if (desktopUpdater === undefined) return { started: false, error: 'updater not ready' }
   const result = await desktopUpdater.install()
   if (result.started && process.platform === 'darwin' && !devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) {
-    const chinese = localeChinese()
-    const options: Electron.MessageBoxOptions = {
-      type: 'info',
-      title: 'DeepSeek Harness Desktop',
-      message: chinese ? '已打开新版本安装镜像' : 'The new installer image is open',
-      detail: chinese
-        ? '请将应用拖到「应用程序」文件夹替换旧版本，然后重新打开。'
-        : 'Drag the app to Applications to replace the current copy, then reopen it.',
-      buttons: ['OK'],
-    }
-    const owner = mainWindow
-    if (owner === null || owner.isDestroyed()) void dialog.showMessageBox(options)
-    else void dialog.showMessageBox(owner, options)
+    promptMacReplace()
   }
   return result
+}
+
+/**
+ * macOS has no installer to hand off to: the image opens in Finder and the
+ * person drags the app over the old copy. Finder refuses that drag while the
+ * old copy is running ("项目正在使用中"), which left the update with no way to
+ * finish — so offer to quit right here, with the image already open.
+ */
+function promptMacReplace(): void {
+  const chinese = localeChinese()
+  const options: Electron.MessageBoxOptions = {
+    type: 'info',
+    title: 'DeepSeek Harness Desktop',
+    message: chinese ? '已打开新版本安装镜像' : 'The new installer image is open',
+    detail: chinese
+      ? '替换「应用程序」中的旧版本需要先退出本应用，否则 Finder 会提示「正在使用中」。\n退出后请把镜像里的应用拖到「应用程序」文件夹，然后重新打开。'
+      : 'Quit first — Finder cannot replace a copy that is running.\nThen drag the app from the image into Applications and reopen it.',
+    buttons: chinese ? ['退出并替换', '稍后'] : ['Quit and replace', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  }
+  const owner = mainWindow
+  const shown = owner === null || owner.isDestroyed()
+    ? dialog.showMessageBox(options)
+    : dialog.showMessageBox(owner, options)
+  void shown.then((answer) => {
+    // Quit for real: a tray-resident client that only hides its window would
+    // still hold the bundle open, which is the problem being solved here.
+    if (answer.response === 0) app.quit()
+  })
 }
 
 function scheduleAutoUpdateCheck(): void {
@@ -2205,6 +2232,30 @@ function scheduleAutoUpdateCheck(): void {
   }, AUTO_CHECK_DELAY_MS).unref()
 }
 
+/**
+ * The update state as the client's own settings page consumes it. Release
+ * notes are Markdown; the page has no renderer, so the HTML is produced here
+ * (escaped, closed subset) and travels beside the source text.
+ */
+function updateStateForPage(state: UpdateState): UpdateState & { notesHtml: string } {
+  return { ...state, notesHtml: renderedNotesHtml(state.info?.notes ?? '') }
+}
+
+let notesHtmlCache: { source: string; html: string } = { source: '', html: '' }
+
+/** The page polls several times a second during a download; render once. */
+function renderedNotesHtml(source: string): string {
+  if (notesHtmlCache.source !== source) {
+    notesHtmlCache = { source, html: renderReleaseNotes(source) }
+  }
+  return notesHtmlCache.html
+}
+
+function pageUpdateState(): (UpdateState & { notesHtml: string }) | undefined {
+  const state = desktopUpdater?.getState()
+  return state === undefined ? undefined : updateStateForPage(state)
+}
+
 function jsonHeaders(): Record<string, string> {
   return { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' }
 }
@@ -2216,21 +2267,35 @@ function writeJson(res: import('node:http').ServerResponse, status: number, body
 
 /** Behavior for the loopback connection-settings page, served under the same origin. */
 const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
+  + 'let shownNotes="";'
   + 'function renderUpdate(u){if(!u)return;'
   + 'const busy=u.phase==="checking"||u.phase==="downloading"||u.phase==="installing";'
   + '$("update-check").disabled=busy;$("update-install").disabled=busy;'
-  + 'const has=u.phase==="available"&&u.info;$("update-install").hidden=!has||busy||u.phase==="installing";'
+  // A refused install keeps the offer (and the button) on screen, so the
+  // error phase counts as an offer too — same rule as the injected card.
+  + 'const has=(u.phase==="available"||u.phase==="error")&&u.info;$("update-install").hidden=!has||busy;'
   + '$("update-dismiss").hidden=!has||u.dismissed||busy;'
   + 'let line="";'
   + 'if(u.phase==="checking")line="正在检查…";'
   + 'else if(u.phase==="upToDate")line="已是最新版本";'
   + 'else if(u.phase==="available"&&u.info)line="发现 v"+u.info.availableVersion;'
-  + 'else if(u.phase==="downloading")line="下载中 "+((u.progress&&u.progress.percent)||0)+"%";'
+  + 'else if(u.phase==="downloading")line="下载中 "+((u.progress&&u.progress.percent)||0)+"%"'
+  + '+(u.progress&&u.progress.downloaded?" · "+(u.progress.downloaded/1048576).toFixed(1)'
+  + '+(u.progress.total?"/"+(u.progress.total/1048576).toFixed(1):"")+" MB":"");'
   + 'else if(u.phase==="installing")line="正在启动安装程序";'
   + 'else if(u.phase==="restartRequired")line="请安装后重新打开";'
-  + 'else if(u.phase==="error")line=u.error||"更新失败";'
+  // The reason, not the phase, decides: a refusal publishes only a reason.
+  + 'const failed=u.phase==="error"||u.error;'
+  + 'if(failed)line="更新失败："+(u.error||"未知错误");'
   + '$("update-status").textContent=line;$("update-status").hidden=!line;'
-  + '$("update-notes").textContent=(u.info&&u.info.notes)||"";}'
+  + '$("update-status").classList.toggle("error",!!failed);'
+  + 'const bar=$("update-bar");bar.hidden=u.phase!=="downloading";'
+  + 'if(!bar.hidden)bar.firstElementChild.style.width=((u.progress&&u.progress.percent)||0)+"%";'
+  // notesHtml is rendered in the main process from the release Markdown.
+  // Rebuilding it would reset the box's scroll position and drop any
+  // selection, and this runs several times a second while downloading.
+  + 'const notes=u.notesHtml||"";$("update-notes").hidden=!notes;'
+  + 'if(notes!==shownNotes){shownNotes=notes;$("update-notes").innerHTML=notes}}'
   // Named by WHO started the runtime, then which dsh it is. "本地"/"内置" used
   // to overlap: a client-spawned child was labelled 本地 even when it ran the
   // 内置 copy, and a reused instance the user started themselves got neither.
@@ -2266,8 +2331,17 @@ const SETTINGS_PAGE_SCRIPT = 'const $ = id => document.getElementById(id);'
   + '$("note").textContent=j.switched?"正在切换…":("切换失败："+(j.error||"未知错误"));if(!j.switched)$("switch").disabled=false;'
   + 'if(j.switched)setTimeout(()=>window.close(),500);'
   + '}catch(e){$("note").textContent="切换失败："+e.message;$("switch").disabled=false}};'
-  + '$("update-check").onclick=async()=>{try{$("update-check").disabled=true;const r=await fetch("desktop/update/check",{method:"POST"});renderUpdate((await r.json()).state)}catch(e){$("update-status").hidden=false;$("update-status").textContent="检查失败："+e.message}};'
-  + '$("update-install").onclick=async()=>{try{$("update-install").disabled=true;const r=await fetch("desktop/update/install",{method:"POST"});const j=await r.json();if(j.state)renderUpdate(j.state);if(!j.started){$("update-status").hidden=false;$("update-status").textContent="安装失败："+(j.error||"未知错误")}}catch(e){$("update-status").hidden=false;$("update-status").textContent="安装失败："+e.message}};'
+  // Any answer must put the button back; a fetch that throws would otherwise
+  // leave it grey until the page is reopened.
+  + '$("update-check").onclick=async()=>{try{$("update-check").disabled=true;const r=await fetch("desktop/update/check",{method:"POST"});renderUpdate((await r.json()).state)}'
+  + 'catch(e){$("update-check").disabled=false;$("update-status").hidden=false;$("update-status").classList.add("error");$("update-status").textContent="检查失败："+e.message}};'
+  // The install answers only when the download is done, so the page says what
+  // it is doing now, and puts the button back for any answer that never began.
+  + '$("update-install").onclick=async()=>{const fail=t=>{$("update-install").disabled=false;'
+  + '$("update-status").hidden=false;$("update-status").classList.add("error");$("update-status").textContent="安装失败："+t};'
+  + 'try{$("update-install").disabled=true;$("update-status").hidden=false;$("update-status").textContent="正在准备下载…";'
+  + 'const r=await fetch("desktop/update/install",{method:"POST"});const j=await r.json();if(j.state)renderUpdate(j.state);'
+  + 'if(!j.started)fail(j.error||"未知错误")}catch(e){fail(e.message)}};'
   + '$("update-dismiss").onclick=async()=>{await fetch("desktop/update/dismiss",{method:"POST"});renderUpdate(await(await fetch("desktop/update")).json())};'
   + 'refresh();'
   + 'setInterval(async()=>{try{const u=await(await fetch("desktop/update")).json();if(u.phase==="downloading"||u.phase==="installing")renderUpdate(u)}catch(e){}},400);'
@@ -2310,9 +2384,13 @@ function settingsPageHtml(): string {
     + '.note{margin:8px 0 0;font-size:13px;color:#6e7480}'
     // Divider
     + '.divider{border:none;border-top:1px solid #ebeef2;margin:28px 0}'
-    // Update notes
-    + '#update-notes{white-space:pre-wrap;max-height:120px;overflow:auto;margin:0 0 10px;font-size:13px;color:#6e7480}'
-    + '#update-notes:empty{display:none}'
+    // Download progress
+    + '.progress{height:4px;margin:0 0 10px;border-radius:999px;background:#ebeef2;overflow:hidden}'
+    + '.progress span{display:block;height:100%;width:0;border-radius:999px;background:#0f1115;transition:width .2s ease}'
+    + '.status-text.error{color:#d93f3f}'
+    // Update notes: release Markdown, rendered in the main process. The
+    // stylesheet is shared with the card injected into the Web UI settings.
+    + releaseNotesCss('#update-notes', { text: '#6e7480', strong: '#0f1115', border: '#d8d8d4', surface: '#ebeef2' })
     // Dark mode
     + '@media(prefers-color-scheme:dark){body{background:#17181a;color:#f4f5f6}'
     + '.mark{box-shadow:0 12px 32px rgba(0,0,0,.34)}'
@@ -2324,7 +2402,10 @@ function settingsPageHtml(): string {
     + 'button.primary{background:#f4f5f6;border-color:#f4f5f6;color:#17181a}'
     + 'button.primary:hover{opacity:.88;background:#f4f5f6}'
     + '.note{color:#aeb3bb}.divider{border-color:#2c2e33}'
-    + '#update-notes{color:#aeb3bb}}'
+    + '.progress{background:#2c2e33}.progress span{background:#f4f5f6}'
+    + '.status-text.error{color:#ff6b6b}'
+    + releaseNotesCss('#update-notes', { text: '#aeb3bb', strong: '#f4f5f6', border: '#3a3d42', surface: '#232529' })
+    + '}'
     // Reduced motion
     + '@media(prefers-reduced-motion:reduce){*{transition:none!important}}'
     + '</style></head><body><div class="container">'
@@ -2353,7 +2434,8 @@ function settingsPageHtml(): string {
     + '</div></div>'
     + '<p class="version-text" id="versions"></p>'
     + '<p class="status-text" id="update-status" hidden></p>'
-    + '<p id="update-notes"></p>'
+    + '<div class="progress" id="update-bar" hidden><span></span></div>'
+    + '<div id="update-notes" hidden></div>'
     + '</div>'
     + '</div><script src="desktop/settings.js"></script></body></html>'
 }
@@ -2656,7 +2738,10 @@ function startSettingsServer(): Promise<number> {
       return
     }
     if (pathname === '/desktop/update') {
-      writeJson(res, 200, desktopUpdater?.getState() ?? { phase: 'idle', currentVersion: desktopClientVersion(), info: null, progress: null, error: 'updater not ready', dismissed: false, isChecking: false })
+      const state = desktopUpdater?.getState()
+      writeJson(res, 200, state === undefined
+        ? { phase: 'idle', currentVersion: desktopClientVersion(), info: null, progress: null, error: 'updater not ready', dismissed: false, isChecking: false }
+        : updateStateForPage(state))
       return
     }
     if (pathname === '/desktop/update/check' && req.method === 'POST') {
@@ -2666,20 +2751,20 @@ function startSettingsServer(): Promise<number> {
       }
       desktopUpdater.resetDismiss()
       void desktopUpdater.check().then((result) => {
-        writeJson(res, 200, { ...result, state: desktopUpdater?.getState() })
+        writeJson(res, 200, { ...result, state: pageUpdateState() })
       })
       return
     }
     if (pathname === '/desktop/update/install' && req.method === 'POST') {
       void installDesktopUpdate().then((result) => {
-        writeJson(res, result.started ? 200 : 400, { ...result, state: desktopUpdater?.getState() })
+        writeJson(res, result.started ? 200 : 400, { ...result, state: pageUpdateState() })
         if (result.started) scheduleQuitAfterWindowsInstall()
       })
       return
     }
     if (pathname === '/desktop/update/dismiss' && req.method === 'POST') {
       desktopUpdater?.dismiss()
-      writeJson(res, 200, desktopUpdater?.getState() ?? { dismissed: true })
+      writeJson(res, 200, pageUpdateState() ?? { dismissed: true })
       return
     }
     if (pathname === '/desktop/settings.js') {
@@ -3011,7 +3096,9 @@ if (!gotLock) {
           (chinese ? '安装程序会在本机运行。请求来自：' : 'The installer will run on this machine. Requested by: ')
           + (currentTarget() ?? ''),
         )
-        if (!confirmed) return { started: false, error: chinese ? '已取消' : 'Cancelled' }
+        // Declining is an answer, not a failure: the card says so, and says
+        // it without the "update failed" prefix.
+        if (!confirmed) return { started: false, cancelled: true }
       }
       const result = await installDesktopUpdate()
       if (result.started) scheduleQuitAfterWindowsInstall()

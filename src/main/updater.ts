@@ -94,6 +94,7 @@ const CHECK_TIMEOUT_MS = 30_000
 const DOWNLOAD_IDLE_TIMEOUT_MS = envMs('DSH_DESKTOP_UPDATE_DOWNLOAD_IDLE_MS', 30_000)
 const DOWNLOAD_TIMEOUT_MS = envMs('DSH_DESKTOP_UPDATE_DOWNLOAD_MS', 15 * 60 * 1000)
 const PROGRESS_EMIT_MIN_INTERVAL_MS = 100
+const SPAWN_TIMEOUT_MS = 15_000
 export const AUTO_CHECK_DELAY_MS = 4_000
 export const AUTO_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 
@@ -417,12 +418,18 @@ export class DesktopUpdater {
 
   async install(): Promise<{ started: boolean; error?: string }> {
     const info = this.info
+    // A refusal used to return a reason and leave the state untouched, so a
+    // surface that paints from the state alone showed nothing at all and the
+    // button looked dead. Only a refusal that contradicts an offer on screen
+    // belongs in the state: with no offer (no info) and with a run already
+    // going, the state is already saying the right thing, and the caller
+    // still gets the reason in the result.
     if (info === null) return { started: false, error: '没有可安装的更新' }
     if (this.phase === 'downloading' || this.phase === 'installing' || this.phase === 'restartRequired') {
       return { started: false, error: '更新正在进行中' }
     }
     if (info.sha256 === undefined) {
-      return { started: false, error: '安装包缺少 SHA-256，已拒绝安装' }
+      return this.refuseInstall('安装包缺少 SHA-256，已拒绝安装')
     }
 
     this.error = null
@@ -457,6 +464,19 @@ export class DesktopUpdater {
       this.setPhase('error')
       return { started: false, error: this.error }
     }
+  }
+
+  /**
+   * Refuse an install and leave the reason in the state, for every surface.
+   * The phase stays where it was: nothing about the offer changed, and moving
+   * it to `error` would drop the tray's "update to vX" entry and hide the
+   * install button that each surface would then have to un-hide by hand.
+   */
+  private refuseInstall(reason: string): { started: false; error: string } {
+    this.progress = null
+    this.error = reason
+    this.emit()
+    return { started: false, error: reason }
   }
 
   private markChecked(): void {
@@ -662,16 +682,56 @@ async function sha256File(path: string): Promise<string> {
 }
 
 async function launchInstaller(filePath: string, platform: NodeJS.Platform): Promise<void> {
-  if (platform === 'darwin') {
-    const opened = await shell.openPath(filePath)
-    if (opened !== '') throw new Error(opened)
-    return
-  }
   if (platform === 'win32') {
-    const child = spawn(filePath, [], { detached: true, stdio: 'ignore' })
-    child.unref()
+    await spawnWindowsInstaller(filePath)
     return
   }
   const opened = await shell.openPath(filePath)
   if (opened !== '') throw new Error(opened)
+}
+
+/**
+ * CreateProcess — which is what spawn() uses — fails outright when the target
+ * asks for elevation or a security product holds the file, and the failure
+ * arrives as an 'error' event on a child nobody listens to: an unhandled error
+ * in the main process, and a button that looks dead. Wait for the spawn to
+ * actually happen, and fall back to ShellExecute (shell.openPath), which can
+ * raise the UAC prompt instead of failing on it.
+ */
+function spawnWindowsInstaller(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // 'error' can fire after a successful spawn as well (a failed kill, for
+    // one), and the fallback below launches a real installer — so the handler
+    // stays attached, to keep late errors from going unhandled, but acts once.
+    let settled = false
+    const child = spawn(filePath, [], { detached: true, stdio: 'ignore' })
+    // Node answers a spawn with one event or the other, so this only exists so
+    // that "no answer at all" cannot park the updater in `installing` forever
+    // — where it refuses every later check and install.
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new Error('启动安装程序超时'))
+    }, SPAWN_TIMEOUT_MS)
+    timer.unref()
+    child.once('spawn', () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.unref()
+      resolve()
+    })
+    child.on('error', (spawnError: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      shell.openPath(filePath).then(
+        (opened) => {
+          if (opened === '') resolve()
+          else reject(new Error(opened + '（' + spawnError.message + '）'))
+        },
+        () => { reject(spawnError) },
+      )
+    })
+  })
 }

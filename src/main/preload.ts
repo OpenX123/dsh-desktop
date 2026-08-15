@@ -15,6 +15,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import { releaseNotesCss, renderReleaseNotes } from './release-notes.ts'
 
 /** Connection facts mirrored from the main process. */
 interface ConnectionStatus {
@@ -70,8 +71,8 @@ type CheckUpdateResult = { hasUpdate: false } | { hasUpdate: true; info: UpdateI
 const update = {
   getStatus: (): Promise<UpdateState> => ipcRenderer.invoke('desktop:update:status') as Promise<UpdateState>,
   check: (): Promise<CheckUpdateResult> => ipcRenderer.invoke('desktop:update:check') as Promise<CheckUpdateResult>,
-  install: (): Promise<{ started: boolean; error?: string }> =>
-    ipcRenderer.invoke('desktop:update:install') as Promise<{ started: boolean; error?: string }>,
+  install: (): Promise<{ started: boolean; error?: string; cancelled?: boolean }> =>
+    ipcRenderer.invoke('desktop:update:install') as Promise<{ started: boolean; error?: string; cancelled?: boolean }>,
   dismiss: (): Promise<void> => ipcRenderer.invoke('desktop:update:dismiss') as Promise<void>,
 }
 
@@ -380,7 +381,17 @@ function injectEnhance(panel: Element): void {
       '#' + UPDATE_ID + ' .dsh-enhance-badge{font-size:12px;font-weight:400;color:var(--dsw-alias-label-primary,#0F1115);background:var(--dsw-alias-bg-module-platform,#EBEEF2);border-radius:999px;padding:2px 8px}',
       '#' + UPDATE_ID + ' .dsh-update-version{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-tertiary,#8A9099)}',
       '#' + UPDATE_ID + ' .dsh-update-status{margin:0 0 8px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480)}',
-      '#' + UPDATE_ID + ' .dsh-update-notes{margin:0 0 10px;font-size:13px;color:var(--dsw-alias-label-secondary,#6E7480);white-space:pre-wrap;max-height:120px;overflow:auto}',
+      '#' + UPDATE_ID + ' .dsh-update-status.is-error{color:var(--dsw-alias-status-error,#D93F3F)}',
+      // The notes are release Markdown; the stylesheet for what it renders
+      // into is shared with the client's own settings page.
+      releaseNotesCss('#' + UPDATE_ID + ' .dsh-update-notes', {
+        text: 'var(--dsw-alias-label-secondary,#6E7480)',
+        strong: 'var(--dsw-alias-label-primary,#0F1115)',
+        border: 'var(--dsw-alias-border-l2,#D8D8D4)',
+        surface: 'var(--dsw-alias-bg-module-platform,#EBEEF2)',
+      }),
+      '#' + UPDATE_ID + ' .dsh-update-bar{height:4px;margin:0 0 10px;border-radius:999px;background:var(--dsw-alias-bg-module-platform,#EBEEF2);overflow:hidden}',
+      '#' + UPDATE_ID + ' .dsh-update-bar span{display:block;height:100%;width:0;border-radius:999px;background:var(--dsw-alias-label-primary,#0F1115);transition:width .2s ease}',
       '#' + UPDATE_ID + ' .dsh-enhance-actions{display:flex;gap:8px;align-items:center;margin-left:auto;flex-wrap:wrap}',
       '#' + UPDATE_ID + ' .dsh-enhance-button{white-space:nowrap;font-weight:400;background:transparent;border:1px solid var(--dsw-alias-border-l2,#D8D8D4);border-radius:28px;padding:6px 16px;font-size:13px;color:var(--dsw-alias-label-primary,#0F1115);cursor:pointer;transition:background .15s ease,opacity .15s ease}',
       '#' + UPDATE_ID + ' .dsh-enhance-button:hover{background:var(--dsw-alias-interactive-bg-hover,#F5F6F7)}',
@@ -468,9 +479,14 @@ function updateCopy(english: boolean): {
   dismiss: string
   upToDate: string
   found: string
+  preparing: string
   downloading: string
   installing: string
   restart: string
+  failed: string
+  failedNoReason: string
+  cancelled: string
+  unknown: string
   unavailable: string
   client: string
   bundled: string
@@ -486,9 +502,14 @@ function updateCopy(english: boolean): {
       dismiss: 'Remind me later',
       upToDate: 'You are on the latest version',
       found: 'New version available',
+      preparing: 'Preparing the download…',
       downloading: 'Downloading',
       installing: 'Starting the installer…',
       restart: 'Install the new copy, then reopen the app',
+      failed: 'Update failed: ',
+      failedNoReason: 'Update failed — the reason is shown on the client itself',
+      cancelled: 'Update cancelled',
+      unknown: 'unknown error',
       unavailable: 'Update status unavailable',
       client: 'Desktop client v',
       bundled: 'bundled dsh',
@@ -504,15 +525,47 @@ function updateCopy(english: boolean): {
     dismiss: '稍后提醒',
     upToDate: '已是最新版本',
     found: '发现新版本',
+    preparing: '正在准备下载…',
     downloading: '下载中',
     installing: '正在启动安装程序…',
     restart: '请安装新版本后重新打开应用',
+    failed: '更新失败：',
+    failedNoReason: '更新失败，失败原因只在客户端本机显示',
+    cancelled: '已取消更新',
+    unknown: '未知错误',
     unavailable: '更新状态不可用',
     client: '桌面客户端 v',
     bundled: '内置 dsh',
     dshUnavailable: '不可用',
   }
 }
+
+function errorText(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message === '' ? fallback : error.message
+  const text = String(error)
+  return text === '' ? fallback : text
+}
+
+/** MB, one decimal — the only unit an installer download ever needs. */
+function megabytes(bytes: number): string {
+  return (bytes / 1_048_576).toFixed(1)
+}
+
+/**
+ * A message the card owns rather than the state: the refusals that never reach
+ * a phase change (a denied bridge call, a rejected invoke) would otherwise
+ * leave the button looking dead.
+ */
+function showUpdateMessage(text: string, isError: boolean): void {
+  const statusEl = document.getElementById(UPDATE_ID)?.querySelector('#dsh-update-status') as HTMLElement | null
+  if (statusEl === null || statusEl === undefined) return
+  statusEl.hidden = false
+  statusEl.textContent = text
+  statusEl.classList.toggle('is-error', isError)
+}
+
+/** The notes source each notes box currently shows, keyed by the box itself. */
+const paintedNotes = new WeakMap<HTMLElement, string>()
 
 function paintUpdateCard(state: UpdateState, english: boolean): void {
   const block = document.getElementById(UPDATE_ID)
@@ -521,15 +574,21 @@ function paintUpdateCard(state: UpdateState, english: boolean): void {
   const versionEl = block.querySelector('#dsh-update-version') as HTMLElement | null
   const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
   const notesEl = block.querySelector('#dsh-update-notes') as HTMLElement | null
+  const barEl = block.querySelector('#dsh-update-bar') as HTMLElement | null
+  const barFillEl = block.querySelector('#dsh-update-bar span') as HTMLElement | null
   const checkEl = block.querySelector('#dsh-update-check') as HTMLButtonElement | null
   const installEl = block.querySelector('#dsh-update-install') as HTMLButtonElement | null
   const dismissEl = block.querySelector('#dsh-update-dismiss') as HTMLButtonElement | null
   if (versionEl === null || statusEl === null || notesEl === null || checkEl === null || installEl === null || dismissEl === null) return
+  if (barEl === null || barFillEl === null) return
 
   const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'installing'
   checkEl.disabled = busy
   checkEl.textContent = state.phase === 'checking' ? copy.checking : copy.check
-  const showInstall = state.phase === 'available' && state.info !== null && !busy
+  // A failed attempt keeps the offer on screen: the update is still there and
+  // retrying is the obvious next move. Without this the state would say
+  // "hide" while the click handler said "show", and they would fight.
+  const showInstall = (state.phase === 'available' || state.phase === 'error') && state.info !== null && !busy
   installEl.hidden = !showInstall
   dismissEl.hidden = !showInstall || state.dismissed
   installEl.disabled = busy
@@ -542,15 +601,40 @@ function paintUpdateCard(state: UpdateState, english: boolean): void {
   else if (state.phase === 'upToDate') line = copy.upToDate
   else if (state.phase === 'available' && state.info !== null) line = copy.found + ' v' + state.info.availableVersion
   else if (state.phase === 'downloading') {
-    const percent = state.progress?.percent
-    line = copy.downloading + (typeof percent === 'number' && percent > 0 ? ' ' + String(percent) + '%' : '…')
+    // A download with no percentage still has to look alive, so the byte
+    // counter carries it when the response arrives without a content-length.
+    const progress = state.progress
+    const percent = progress?.percent ?? 0
+    const total = progress?.total ?? 0
+    line = copy.downloading + (percent > 0 ? ' ' + String(percent) + '%' : '…')
+    if (progress !== null && progress.downloaded > 0) {
+      line += ' · ' + megabytes(progress.downloaded) + (total > 0 ? '/' + megabytes(total) : '') + ' MB'
+    }
   } else if (state.phase === 'installing') line = copy.installing
   else if (state.phase === 'restartRequired') line = copy.restart
-  else if (state.phase === 'error') line = state.error ?? copy.unavailable
+  // A refusal leaves the phase alone and publishes only a reason, so the
+  // reason — not the phase — is what decides this line.
+  const failed = state.phase === 'error' || state.error !== null
+  // A remote page never receives the reason (it names local paths), so say
+  // where the reason is rather than inventing one.
+  if (failed) line = state.error === null ? copy.failedNoReason : copy.failed + state.error
   statusEl.textContent = line
   statusEl.hidden = line === ''
-  notesEl.textContent = state.info?.notes ?? ''
-  notesEl.hidden = (state.info?.notes ?? '') === ''
+  statusEl.classList.toggle('is-error', failed)
+
+  const downloading = state.phase === 'downloading'
+  barEl.hidden = !downloading
+  if (downloading) barFillEl.style.width = String(state.progress?.percent ?? 0) + '%'
+
+  const notes = state.info?.notes ?? ''
+  notesEl.hidden = notes === ''
+  // Rebuilding the box resets its scroll position and drops any selection, and
+  // a download repaints this card several times a second — so it is rebuilt
+  // only when the source text actually moved.
+  if (paintedNotes.get(notesEl) !== notes) {
+    paintedNotes.set(notesEl, notes)
+    notesEl.innerHTML = renderReleaseNotes(notes)
+  }
 }
 
 function injectUpdate(panel: Element, english: boolean): void {
@@ -567,15 +651,36 @@ function injectUpdate(panel: Element, english: boolean): void {
     + '</div></div>'
     + '<p class="dsh-update-version" id="dsh-update-version"></p>'
     + '<p class="dsh-update-status" id="dsh-update-status" hidden></p>'
-    + '<p class="dsh-update-notes" id="dsh-update-notes" hidden></p>'
+    + '<div class="dsh-update-bar" id="dsh-update-bar" hidden><span></span></div>'
+    + '<div class="dsh-update-notes" id="dsh-update-notes" hidden></div>'
   block.querySelector('#dsh-update-check')?.addEventListener('click', () => {
+    showUpdateMessage(copy.checking, false)
     void update.check()
       .then(() => update.getStatus())
       .then((state) => { paintUpdateCard(state, english) })
-      .catch(() => {})
+      .catch((error: unknown) => { showUpdateMessage(copy.failed + errorText(error, copy.unknown), true) })
   })
-  block.querySelector('#dsh-update-install')?.addEventListener('click', () => {
-    void update.install().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})
+  const installEl = block.querySelector('#dsh-update-install') as HTMLButtonElement | null
+  installEl?.addEventListener('click', () => {
+    // The install runs to completion inside one invoke, so the answer arrives
+    // minutes later. Say something now, and treat every way it can come back
+    // unstarted — a refusal in the result, a rejected call — as a message.
+    // Visibility stays with the state; only the disabled flag is ours.
+    installEl.disabled = true
+    showUpdateMessage(copy.preparing, false)
+    void update.install()
+      .then((result) => update.getStatus().then((state) => {
+        paintUpdateCard(state, english)
+        if (result.started) return
+        installEl.disabled = false
+        // Declining the confirmation is an answer, not a failure.
+        if (result.cancelled === true) showUpdateMessage(copy.cancelled, false)
+        else showUpdateMessage(copy.failed + (result.error ?? copy.unknown), true)
+      }))
+      .catch((error: unknown) => {
+        installEl.disabled = false
+        showUpdateMessage(copy.failed + errorText(error, copy.unknown), true)
+      })
   })
   block.querySelector('#dsh-update-dismiss')?.addEventListener('click', () => {
     void update.dismiss().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})

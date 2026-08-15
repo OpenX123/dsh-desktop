@@ -131,6 +131,62 @@ for (const [left, right, expected] of orderings) {
 }
 console.log('✓ compareVersions orders core, release-over-prerelease, and numeric prerelease ranks')
 
+// Release notes reach three surfaces: two HTML cards and one native dialog.
+const notesBundle = join(work, 'release-notes.mjs')
+await esbuild.build({
+  entryPoints: [join(APP_DIR, 'src', 'main', 'release-notes.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  outfile: notesBundle,
+  logLevel: 'silent',
+})
+const { renderReleaseNotes, renderReleaseNotesText } = await import(pathToFileURL(notesBundle).href)
+const notesSource = [
+  '### 改进',
+  '- 第一条 `code`',
+  '- [文档](https://example.com/a_(b)) 与 **重点**',
+  '',
+  '**粗体里也可能有 *斜体* 夹着**',
+  '',
+  '| 设备 | 文件 |',
+  '|---|---|',
+  '| Mac | a.dmg |',
+  '| 竖线 \\| 转义 | b.exe |',
+  '',
+  '紧随其后的段落里也可能出现 a|b 这种竖线',
+  '',
+  '<img src=x onerror=alert(1)>',
+].join('\n')
+const notesHtml = renderReleaseNotes(notesSource)
+const htmlExpectations = [
+  ['<h5>改进</h5>', true],
+  ['<code>code</code>', true],
+  ['<a href="https://example.com/a_(b)" target="_blank" rel="noreferrer noopener">文档</a>', true],
+  ['<strong>重点</strong>', true],
+  // The table ends at the blank line; the prose after it is its own paragraph.
+  ['<tr><td>Mac</td><td>a.dmg</td></tr>', true],
+  // An escaped pipe belongs to the cell, not to the column boundary.
+  ['<tr><td>竖线 | 转义</td><td>b.exe</td></tr>', true],
+  // Bold keeps the single markers inside it instead of losing the pair.
+  ['<strong>粗体里也可能有 <em>斜体</em> 夹着</strong>', true],
+  ['<p>紧随其后的段落里也可能出现 a|b 这种竖线</p>', true],
+  // Nothing from the feed may reach the DOM as markup.
+  ['<img', false],
+  ['&lt;img src=x onerror=alert(1)&gt;', true],
+]
+for (const [fragment, expected] of htmlExpectations) {
+  if (notesHtml.includes(fragment) !== expected) {
+    throw new Error('release notes HTML: expected ' + (expected ? '' : 'no ') + fragment + ' in ' + notesHtml)
+  }
+}
+const notesText = renderReleaseNotesText(notesSource)
+if (!notesText.includes('• 第一条 code') || notesText.includes('###') || notesText.includes('**')
+  || !notesText.includes('文档 与 重点')) {
+  throw new Error('release notes text kept its markers: ' + JSON.stringify(notesText))
+}
+console.log('✓ release notes render to escaped HTML for the cards and to plain text for the dialog')
+
 const payload = Buffer.from('desktop-update-payload')
 const payloadHash = createHash('sha256').update(payload).digest('hex')
 const currentKey = process.platform === 'win32'
@@ -146,7 +202,8 @@ if (currentKey === undefined) {
 
 const availableFeed = {
   version: '99.0.0',
-  notes: 'fixture changelog',
+  // Release notes are Markdown; the card must render them, not print them.
+  notes: '### fixture changelog\n- 第一条\n- 第二条\n\n`dsh` 已内置。',
   pubDate: '2026-08-14T00:00:00.000Z',
   platforms: {
     [currentKey]: { url: '', sha256: payloadHash },
@@ -255,8 +312,18 @@ try {
     throw new Error('status currentVersion: ' + JSON.stringify(before))
   }
   const checked = await available.window.evaluate(() => window.desktop.update.check())
-  if (!checked.hasUpdate || checked.info.availableVersion !== '99.0.0' || checked.info.notes !== 'fixture changelog') {
+  if (!checked.hasUpdate || checked.info.availableVersion !== '99.0.0' || !checked.info.notes.includes('第一条')) {
     throw new Error('check did not report fixture update: ' + JSON.stringify(checked))
+  }
+  // The card repaints from the push channel, so the notes appear without any
+  // further call — as rendered Markdown, not as its source.
+  await available.window.locator('#dsh-update-notes h5').waitFor({ state: 'visible', timeout: 3_000 })
+  const notes = await available.window.evaluate(() => {
+    const el = document.getElementById('dsh-update-notes')
+    return { items: el.querySelectorAll('li').length, code: el.querySelectorAll('code').length, text: el.textContent }
+  })
+  if (notes.items !== 2 || notes.code !== 1 || notes.text.includes('###')) {
+    throw new Error('release notes were not rendered as Markdown: ' + JSON.stringify(notes))
   }
   const installed = await available.window.evaluate(() => window.desktop.update.install())
   if (!installed.started) throw new Error('dry-run install failed: ' + JSON.stringify(installed))
@@ -298,12 +365,27 @@ try {
   const noHash = await launchApp(noHashHome)
   const noHashCheck = await noHash.window.evaluate(() => window.desktop.update.check())
   if (!noHashCheck.hasUpdate) throw new Error('no-hash feed should still be available: ' + JSON.stringify(noHashCheck))
+  // A refusal that never reaches the person is the same as a dead button:
+  // clicking must leave the reason on the card.
+  await noHash.window.locator('#dsh-update-install').waitFor({ state: 'visible', timeout: 3_000 })
+  await noHash.window.locator('#dsh-update-install').click()
+  await noHash.window.waitForFunction(() => {
+    const el = document.getElementById('dsh-update-status')
+    return el !== null && !el.hidden && el.textContent.includes('SHA-256')
+  }, null, { timeout: 5_000 })
   const noHashInstall = await noHash.window.evaluate(() => window.desktop.update.install())
   if (noHashInstall.started || !String(noHashInstall.error ?? '').includes('SHA-256')) {
     throw new Error('expected missing SHA-256 refusal: ' + JSON.stringify(noHashInstall))
   }
+  // A refusal must not retract the offer: the tray reads this same phase, and
+  // the button has to stay clickable for a retry.
+  const afterRefusal = await noHash.window.evaluate(() => window.desktop.update.getStatus())
+  const buttonShown = await noHash.window.locator('#dsh-update-install').isVisible()
+  if (afterRefusal.phase !== 'available' || !buttonShown) {
+    throw new Error('refusal changed the offer: ' + JSON.stringify({ phase: afterRefusal.phase, buttonShown }))
+  }
   await noHash.app.close()
-  console.log('✓ install refuses a payload that has no SHA-256')
+  console.log('✓ install refuses a payload that has no SHA-256, and says so on the card')
 
   feedMode = 'hang'
   const hangHome = join(work, 'hang')
