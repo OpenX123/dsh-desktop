@@ -659,13 +659,54 @@ function paintUpdateCard(state: UpdateState, english: boolean): void {
   }
 }
 
-function injectUpdate(panel: Element, english: boolean): void {
+/**
+ * The labels the card owns rather than the state. The official language
+ * setting can change while the card is on screen, and the card is only
+ * rebuilt when its panel goes away — so these are retexted in place instead
+ * of waiting for the next injection.
+ */
+function applyUpdateStaticCopy(block: HTMLElement, english: boolean): void {
+  const copy = updateCopy(english)
+  const setText = (selector: string, text: string): void => {
+    const el = block.querySelector(selector)
+    if (el !== null) el.textContent = text
+  }
+  setText('#dsh-update-title-text', copy.title)
+  setText('#dsh-update-badge', copy.badge)
+  setText('#dsh-update-install', copy.install)
+  setText('#dsh-update-dismiss', copy.dismiss)
+  const link = block.querySelector('#dsh-update-releases')
+  if (link !== null) {
+    link.setAttribute('title', copy.releases)
+    link.setAttribute('aria-label', copy.releases)
+  }
+  // The check button doubles as a progress label while a check runs, and that
+  // wording belongs to paintUpdateCard — only the resting label is ours.
+  const checkEl = block.querySelector('#dsh-update-check') as HTMLButtonElement | null
+  if (checkEl !== null && !checkEl.disabled) checkEl.textContent = copy.check
+}
+
+/** Follow a mid-session language switch, without repainting on every probe. */
+function refreshUpdateLanguage(block: HTMLElement, english: boolean): void {
+  const language = english ? 'en' : 'zh'
+  if (block.dataset.dshLanguage === language) return
+  block.dataset.dshLanguage = language
+  applyUpdateStaticCopy(block, english)
+  // The state-derived lines (version, status, notes) are painted from a state,
+  // so the new language reaches them only by painting one now.
+  void update.getStatus().then((state) => { paintUpdateCard(state, english) }).catch(() => {})
+}
+
+function injectUpdate(panel: Element): void {
   if (panel.querySelector('#' + UPDATE_ID) !== null) return
+  const english = currentEnglish()
   const copy = updateCopy(english)
   const block = document.createElement('div')
   block.id = UPDATE_ID
+  block.dataset.dshLanguage = english ? 'en' : 'zh'
   block.innerHTML =
-    '<div class="dsh-update-title">' + copy.title + '<span class="dsh-enhance-badge">' + copy.badge + '</span>'
+    '<div class="dsh-update-title"><span id="dsh-update-title-text">' + copy.title + '</span>'
+    + '<span class="dsh-enhance-badge" id="dsh-update-badge">' + copy.badge + '</span>'
     + '<div class="dsh-enhance-actions">'
     + '<a class="dsh-update-link" id="dsh-update-releases" href="' + RELEASES_PAGE_URL + '" target="_blank"'
     + ' rel="noreferrer" title="' + copy.releases + '" aria-label="' + copy.releases + '">' + EXTERNAL_LINK_SVG + '</a>'
@@ -677,12 +718,15 @@ function injectUpdate(panel: Element, english: boolean): void {
     + '<p class="dsh-update-status" id="dsh-update-status" hidden></p>'
     + '<div class="dsh-update-bar" id="dsh-update-bar" hidden><span></span></div>'
     + '<div class="dsh-update-notes" id="dsh-update-notes" hidden></div>'
+  // Every handler resolves the language when it runs, not when it was
+  // attached: the card outlives a language switch made in this same dialog.
   block.querySelector('#dsh-update-check')?.addEventListener('click', () => {
-    showUpdateMessage(copy.checking, false)
+    const live = updateCopy(currentEnglish())
+    showUpdateMessage(live.checking, false)
     void update.check()
       .then(() => update.getStatus())
-      .then((state) => { paintUpdateCard(state, english) })
-      .catch((error: unknown) => { showUpdateMessage(copy.failed + errorText(error, copy.unknown), true) })
+      .then((state) => { paintUpdateCard(state, currentEnglish()) })
+      .catch((error: unknown) => { showUpdateMessage(live.failed + errorText(error, live.unknown), true) })
   })
   const installEl = block.querySelector('#dsh-update-install') as HTMLButtonElement | null
   installEl?.addEventListener('click', () => {
@@ -691,23 +735,25 @@ function injectUpdate(panel: Element, english: boolean): void {
     // unstarted — a refusal in the result, a rejected call — as a message.
     // Visibility stays with the state; only the disabled flag is ours.
     installEl.disabled = true
-    showUpdateMessage(copy.preparing, false)
+    showUpdateMessage(updateCopy(currentEnglish()).preparing, false)
     void update.install()
       .then((result) => update.getStatus().then((state) => {
-        paintUpdateCard(state, english)
+        const live = updateCopy(currentEnglish())
+        paintUpdateCard(state, currentEnglish())
         if (result.started) return
         installEl.disabled = false
         // Declining the confirmation is an answer, not a failure.
-        if (result.cancelled === true) showUpdateMessage(copy.cancelled, false)
-        else showUpdateMessage(copy.failed + (result.error ?? copy.unknown), true)
+        if (result.cancelled === true) showUpdateMessage(live.cancelled, false)
+        else showUpdateMessage(live.failed + (result.error ?? live.unknown), true)
       }))
       .catch((error: unknown) => {
+        const live = updateCopy(currentEnglish())
         installEl.disabled = false
-        showUpdateMessage(copy.failed + errorText(error, copy.unknown), true)
+        showUpdateMessage(live.failed + errorText(error, live.unknown), true)
       })
   })
   block.querySelector('#dsh-update-dismiss')?.addEventListener('click', () => {
-    void update.dismiss().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, english) }).catch(() => {})
+    void update.dismiss().then(() => update.getStatus()).then((state) => { paintUpdateCard(state, currentEnglish()) }).catch(() => {})
   })
   panel.appendChild(block)
   void Promise.allSettled([update.getStatus(), connection.getStatus()]).then((results) => {
@@ -715,13 +761,13 @@ function injectUpdate(panel: Element, english: boolean): void {
     const conn = results[1].status === 'fulfilled' ? results[1].value : null
     if (conn !== null) block.dataset.dshVersion = conn.dshVersion ?? ''
     if (state !== null) {
-      paintUpdateCard(state, english)
+      paintUpdateCard(state, currentEnglish())
       return
     }
     const statusEl = block.querySelector('#dsh-update-status') as HTMLElement | null
     if (statusEl !== null) {
       statusEl.hidden = false
-      statusEl.textContent = copy.unavailable
+      statusEl.textContent = updateCopy(currentEnglish()).unavailable
     }
   })
 }
@@ -816,7 +862,9 @@ function watchSettingsDialog(): void {
     if (panel === null || (existingUpdate !== null && existingUpdate.parentElement !== panel)) existingUpdate?.remove()
     if (panel !== null) {
       injectEnhance(panel)
-      injectUpdate(panel, !isChineseGeneralTab())
+      injectUpdate(panel)
+      const card = document.getElementById(UPDATE_ID)
+      if (card !== null) refreshUpdateLanguage(card, currentEnglish())
     }
   }
 
@@ -843,9 +891,14 @@ function watchSettingsDialog(): void {
   }
   new MutationObserver(scheduleProbe).observe(document.documentElement, { childList: true, subtree: true })
   ipcRenderer.on('desktop:update:changed', (_event, state: UpdateState) => {
-    paintUpdateCard(state, !isChineseGeneralTab())
+    paintUpdateCard(state, currentEnglish())
   })
   probe()
+}
+
+/** The card's language, resolved from the official setting at the moment of the call. */
+function currentEnglish(): boolean {
+  return !isChineseGeneralTab()
 }
 
 function isChineseGeneralTab(): boolean {

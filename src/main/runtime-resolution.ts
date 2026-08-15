@@ -45,6 +45,33 @@ export function normalizePathEntry(entry: string): string {
 }
 
 /**
+ * Whether two PATH-shaped strings name the same directory.
+ *
+ * Windows settles this in three ways POSIX does not: `\` and `/` are both
+ * separators, a trailing separator carries no meaning, and the whole
+ * comparison is case-insensitive. A PATH entry a user typed themselves can
+ * differ from this client's own `join()` output in all three — and this
+ * comparison exists to EXCLUDE a directory (the client's node shim), so every
+ * spelling that fails to match is a spelling that smuggles the shim back in as
+ * a user-installed runtime.
+ *
+ * Textual only: no symlink, junction, or 8.3 short-name resolution. It answers
+ * "the same directory as written", which is the question a PATH entry poses.
+ */
+export function isSameDirectory(left: string, right: string, platform: NodeJS.Platform): boolean {
+  return directoryKey(left, platform) === directoryKey(right, platform)
+}
+
+function directoryKey(value: string, platform: NodeJS.Platform): string {
+  const unified = platform === 'win32' ? value.replace(/\//g, '\\') : value
+  // A root is nothing but its separator, so it is the one case where the
+  // trailing separator has to stay.
+  const trimmed = unified.replace(/[\\/]+$/, '')
+  const key = trimmed === '' ? unified : trimmed
+  return platform === 'win32' ? key.toLowerCase() : key
+}
+
+/**
  * How a resolved `dsh` binary must be handed to `spawn`.
  *
  * A Windows `.cmd`/`.bat` shim is a batch script, not an image Node can

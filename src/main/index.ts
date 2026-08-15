@@ -38,6 +38,7 @@ import {
 import { releaseNotesCss, renderReleaseNotes, renderReleaseNotesText } from './release-notes.ts'
 import {
   executableCandidates,
+  isSameDirectory,
   normalizePathEntry,
   npxCacheRoot,
   parseVersionOutput,
@@ -277,7 +278,10 @@ function childPath(): string {
   const current = process.env.PATH ?? ''
   const shimDir = ensureNodeShim()
   if (shimDir === undefined) return current
-  if (current.split(delimiter).includes(shimDir)) return current
+  // Same directory comparison as findOnPath's exclusion: an entry already on
+  // PATH under another spelling is already the shim directory.
+  if (current.split(delimiter)
+    .some(entry => isSameDirectory(normalizePathEntry(entry), shimDir, process.platform))) return current
   return current === '' ? shimDir : current + delimiter + shimDir
 }
 
@@ -288,11 +292,18 @@ function childPath(): string {
  * runtime back as if the user had installed one.
  */
 function findOnPath(name: string): string | undefined {
+  // The exclusion is matched the way the platform matches directories, not
+  // byte for byte: a PATH entry the user wrote in another case, with forward
+  // slashes, or with a trailing separator is the same directory, and letting
+  // any of those through would hand the client's own shim back as a
+  // "user-installed" Node — the one thing detectDshInNpxCache() relies on this
+  // to prevent.
   const shimDir = join(clientHome(), 'bin')
   const candidates = executableCandidates(name, process.platform)
   for (const entry of (process.env.PATH ?? '').split(delimiter)) {
     const dir = normalizePathEntry(entry)
-    if (dir === '' || !isAbsolute(dir) || dir === shimDir) continue
+    if (dir === '' || !isAbsolute(dir)) continue
+    if (isSameDirectory(dir, shimDir, process.platform)) continue
     for (const candidate of candidates) {
       const full = join(dir, candidate)
       if (existsSync(full)) return full
@@ -921,13 +932,38 @@ function currentTarget(): string | undefined {
 }
 
 /**
+ * The probe's transport. A configured remote can sit behind a proxy this
+ * machine only reaches through the system settings, or behind a certificate
+ * only the OS trust store knows — exactly what Node's fetch cannot see (see
+ * `updaterFetch`), and a probe that always fails there would keep the blank-
+ * window recovery from ever reloading a Connect-mode window. Chromium's stack
+ * knows both, so a remote origin goes through net.fetch, with Node's fetch as
+ * the fallback for whatever net refuses outright.
+ *
+ * Loopback keeps Node's fetch: nothing about a proxy or a CA applies to it,
+ * and the smart-mode probe's answer must not start depending on the browser
+ * stack's own headers, which the harness's trust fence reads.
+ */
+async function probeFetch(base: string, url: string, init: RequestInit): Promise<Response> {
+  if (originIsLoopback(base) || !app.isReady()) return await fetch(url, init)
+  try {
+    // The probe asks a public question and needs no identity; the session's
+    // cookies for that origin are not part of the question.
+    return await net.fetch(url, { credentials: 'omit', ...init })
+  } catch (error) {
+    if (init.signal?.aborted === true) throw error
+    return await fetch(url, init)
+  }
+}
+
+/**
  * Probe one Web UI origin: a plain non-browser /api call (no browser markers,
  * so the trust fence passes over loopback). Returns the origin when a real
  * harness answers host.describe, undefined otherwise.
  */
 async function probeWebUi(base: string, timeoutMs = 1_500): Promise<string | undefined> {
   try {
-    const response = await fetch(base + '/api/host.describe', {
+    const response = await probeFetch(base, base + '/api/host.describe', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId: 'desktop-probe', method: 'host.describe', payload: {} }),
@@ -2004,13 +2040,15 @@ const updaterFetch: typeof fetch = async (input, init) => {
 }
 
 function createDesktopUpdater(): DesktopUpdater {
-  // Same gate as devOverride(): the packaged client keeps its own feed.
-  const allowFeedOverride = !app.isPackaged || process.env.DSH_DESKTOP_ALLOW_UNSAFE === '1'
+  // Same gate as devOverride(): the packaged client keeps its own feed, its own
+  // timeouts, and its own answer to "should I check at all".
+  const allowEnvOverrides = !app.isPackaged || process.env.DSH_DESKTOP_ALLOW_UNSAFE === '1'
   return new DesktopUpdater({
     fetchImpl: updaterFetch,
     currentVersion: desktopClientVersion(),
-    feedUrl: defaultUpdateFeedUrl(allowFeedOverride),
-    githubApiUrl: defaultGithubApiUrl(allowFeedOverride),
+    feedUrl: defaultUpdateFeedUrl(allowEnvOverrides),
+    githubApiUrl: defaultGithubApiUrl(allowEnvOverrides),
+    allowEnvOverrides,
     platform: process.platform,
     arch: process.arch,
     packaged: app.isPackaged,
@@ -2197,6 +2235,9 @@ function updateDialogCopy(): {
   install: string
   failed: string
   checking: string
+  downloading: string
+  installing: string
+  restart: string
 } {
   if (localeChinese()) {
     return {
@@ -2207,6 +2248,9 @@ function updateDialogCopy(): {
       install: '下载并安装',
       failed: '检查更新失败',
       checking: '正在检查更新…',
+      downloading: '正在下载新版本…',
+      installing: '正在启动安装程序…',
+      restart: '请安装新版本后重新打开应用',
     }
   }
   return {
@@ -2217,6 +2261,9 @@ function updateDialogCopy(): {
     install: 'Download and install',
     failed: 'Could not check for updates',
     checking: 'Checking for updates…',
+    downloading: 'Downloading the new version…',
+    installing: 'Starting the installer…',
+    restart: 'Install the new copy, then reopen the app',
   }
 }
 
@@ -2284,10 +2331,16 @@ async function handleManualUpdateCheck(prompt: boolean): Promise<void> {
   if (busyPhase === 'downloading' || busyPhase === 'installing' || busyPhase === 'restartRequired') {
     if (!prompt || devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) return
     const copy = updateDialogCopy()
+    // Say what is actually running: this branch is reached only while a
+    // download, an install, or a finished install is holding the updater, and
+    // "checking for updates" would describe none of them.
+    const busyMessage = busyPhase === 'downloading'
+      ? copy.downloading
+      : busyPhase === 'installing' ? copy.installing : copy.restart
     const options: Electron.MessageBoxOptions = {
       type: 'info',
       title: 'DeepSeek Harness Desktop',
-      message: copy.checking,
+      message: busyMessage,
       buttons: ['OK'],
     }
     const owner = mainWindow

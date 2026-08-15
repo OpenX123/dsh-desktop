@@ -86,19 +86,31 @@ export interface DesktopUpdaterOptions {
   savePersistence: (next: UpdaterPersistence) => void
   /** When true, download+verify but do not spawn the installer or quit. */
   dryRun: boolean
+  /**
+   * The same gate as the shell's `devOverride`: false in a packaged build, so
+   * no DSH_* variable in the ambient environment reaches this module. Defaults
+   * to false — an updater constructed without an opinion is the strict one.
+   */
+  allowEnvOverrides?: boolean
   now?: () => number
   fetchImpl?: typeof fetch
 }
 
 const CHECK_TIMEOUT_MS = 30_000
-const DOWNLOAD_IDLE_TIMEOUT_MS = envMs('DSH_DESKTOP_UPDATE_DOWNLOAD_IDLE_MS', 30_000)
-const DOWNLOAD_TIMEOUT_MS = envMs('DSH_DESKTOP_UPDATE_DOWNLOAD_MS', 15 * 60 * 1000)
+const DEFAULT_DOWNLOAD_IDLE_TIMEOUT_MS = 30_000
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000
 const PROGRESS_EMIT_MIN_INTERVAL_MS = 100
 const SPAWN_TIMEOUT_MS = 15_000
 export const AUTO_CHECK_DELAY_MS = 4_000
 export const AUTO_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 
-function envMs(name: string, fallback: number): number {
+/**
+ * Read at construction rather than at import, because whether the environment
+ * may be read at all is the caller's answer (`allowEnvOverrides`), not this
+ * module's — and in a packaged build the answer is no.
+ */
+function envMs(name: string, fallback: number, allow: boolean): number {
+  if (!allow) return fallback
   const raw = process.env[name]
   if (raw === undefined) return fallback
   const parsed = Number(raw)
@@ -323,10 +335,18 @@ export class DesktopUpdater {
   private readonly listeners = new Set<(state: UpdateState) => void>()
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
+  private readonly allowEnvOverrides: boolean
+  private readonly downloadIdleTimeoutMs: number
+  private readonly downloadTimeoutMs: number
 
   constructor(private readonly options: DesktopUpdaterOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch
     this.now = options.now ?? Date.now
+    this.allowEnvOverrides = options.allowEnvOverrides === true
+    this.downloadIdleTimeoutMs = envMs(
+      'DSH_DESKTOP_UPDATE_DOWNLOAD_IDLE_MS', DEFAULT_DOWNLOAD_IDLE_TIMEOUT_MS, this.allowEnvOverrides)
+    this.downloadTimeoutMs = envMs(
+      'DSH_DESKTOP_UPDATE_DOWNLOAD_MS', DEFAULT_DOWNLOAD_TIMEOUT_MS, this.allowEnvOverrides)
     this.syncDismissedFromStore()
   }
 
@@ -348,8 +368,15 @@ export class DesktopUpdater {
   }
 
   shouldAutoCheck(): boolean {
-    if (process.env.DSH_DESKTOP_SKIP_UPDATE_CHECK === '1') return false
-    if (!this.options.packaged && process.env.DSH_DESKTOP_UPDATE_FEED === undefined) return false
+    // Behind the same gate as every other DSH_* read: a variable planted in the
+    // packaged client's launch environment must not be able to switch the
+    // update check off and pin the user to an old build forever.
+    if (this.allowEnvOverrides && process.env.DSH_DESKTOP_SKIP_UPDATE_CHECK === '1') return false
+    // A development run checks only when it was pointed at a test feed — and
+    // "was it pointed at one" is the same question as the feed URL itself, so
+    // it is asked through the same gate rather than around it.
+    if (!this.options.packaged
+      && (!this.allowEnvOverrides || process.env.DSH_DESKTOP_UPDATE_FEED === undefined)) return false
     const persisted = this.options.loadPersistence()
     const last = persisted.lastCheckedAt
     if (last !== undefined && this.now() - last < AUTO_CHECK_INTERVAL_MS) return false
@@ -587,11 +614,11 @@ export class DesktopUpdater {
     }
     mkdirSync(dirname(destination), { recursive: true })
     const controller = new AbortController()
-    const overallTimer = setTimeout(() => { controller.abort() }, DOWNLOAD_TIMEOUT_MS)
-    let idleTimer = setTimeout(() => { controller.abort() }, DOWNLOAD_IDLE_TIMEOUT_MS)
+    const overallTimer = setTimeout(() => { controller.abort() }, this.downloadTimeoutMs)
+    let idleTimer = setTimeout(() => { controller.abort() }, this.downloadIdleTimeoutMs)
     const bumpIdle = (): void => {
       clearTimeout(idleTimer)
-      idleTimer = setTimeout(() => { controller.abort() }, DOWNLOAD_IDLE_TIMEOUT_MS)
+      idleTimer = setTimeout(() => { controller.abort() }, this.downloadIdleTimeoutMs)
     }
     try {
       const response = await this.fetchImpl(info.downloadUrl, {
@@ -702,12 +729,45 @@ function fileNameFromUrl(url: string): string | undefined {
   }
 }
 
-function joinDownloadPath(dir: string, fileName: string): string {
-  const safe = fileName.replace(/[\\/]/g, '_')
+/**
+ * Reserved DOS device names: on Windows these name a device rather than a file
+ * in EVERY directory, with or without an extension, so `NUL.exe` opens the null
+ * device instead of creating a file.
+ */
+const WINDOWS_DEVICE_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+])
+
+/**
+ * A feed-supplied installer name reduced to a plain file name inside the
+ * download directory. The name arrives from the update feed, so it decides
+ * where the downloaded executable lands and must not be able to name anything
+ * but `downloadDir/<name>`.
+ *
+ * Applied on every platform, not only Windows: a feed is written once and read
+ * everywhere, so a name that Windows would redirect is worth neutralizing
+ * wherever it is seen rather than only where it bites.
+ */
+export function safeDownloadFileName(fileName: string): string {
+  // `:` travels with the separators: on Windows it both opens a drive-relative
+  // path (`C:evil`) and names an NTFS alternate data stream (`setup.exe:x`),
+  // either of which would put the bytes somewhere other than downloadDir/name.
+  // Windows then silently drops trailing dots and spaces, so `setup.exe .`
+  // would be written — and later verified — under two different names.
+  const trimmed = fileName.replace(/[\\/:]/g, '_').replace(/[. ]+$/, '')
   // Separators are neutralized above; a bare `.`/`..` still names a directory
   // rather than a file, so reject it instead of writing outside downloadDir.
-  if (safe === '' || safe === '.' || safe === '..') throw new Error('更新清单中的安装包文件名无效')
-  return join(dir, safe)
+  if (trimmed === '') throw new Error('更新清单中的安装包文件名无效')
+  // A device name is disarmed by prefixing rather than rejected: the download
+  // is still a real installer, and the local file name is nobody's contract.
+  const stem = (trimmed.split('.')[0] ?? '').toUpperCase()
+  return WINDOWS_DEVICE_NAMES.has(stem) ? '_' + trimmed : trimmed
+}
+
+function joinDownloadPath(dir: string, fileName: string): string {
+  return join(dir, safeDownloadFileName(fileName))
 }
 
 async function sha256File(path: string): Promise<string> {

@@ -106,7 +106,8 @@ await esbuild.build({
   outfile: updaterBundle,
   logLevel: 'silent',
 })
-const { compareVersions, describeFetchError } = await import(pathToFileURL(updaterBundle).href)
+const { compareVersions, describeFetchError, safeDownloadFileName } =
+  await import(pathToFileURL(updaterBundle).href)
 const orderings = [
   // Numeric prerelease identifiers rank by value: the string comparison this
   // replaced put rc.10 BELOW rc.9 and reported a newer build as current.
@@ -143,6 +144,43 @@ if (describeFetchError(new Error('下载更新超时')) !== '下载更新超时'
   throw new Error('describeFetchError rewrote a plain message')
 }
 console.log('✓ a failed fetch reports the cause behind "fetch failed"')
+
+// The installer's file name comes from the feed, so it decides where the
+// downloaded executable lands. Every spelling below is a way a name could name
+// something other than one plain file inside the download directory.
+const fileNames = [
+  ['dsh-desktop-1.2.3-win-x64.exe', 'dsh-desktop-1.2.3-win-x64.exe'],
+  ['../../evil.exe', '.._.._evil.exe'],
+  ['sub\\dir\\evil.exe', 'sub_dir_evil.exe'],
+  // A drive-relative path and an NTFS alternate data stream: both write
+  // somewhere other than downloadDir/<name> once win32.join is done with them.
+  ['C:evil.exe', 'C_evil.exe'],
+  ['setup.exe:stream', 'setup.exe_stream'],
+  // Windows drops trailing dots and spaces when opening a file, so the name
+  // written and the name verified would otherwise differ.
+  ['setup.exe.', 'setup.exe'],
+  ['setup.exe ', 'setup.exe'],
+  // A device name opens a device from any directory, extension or not.
+  ['NUL.exe', '_NUL.exe'],
+  ['com1', '_com1'],
+  // Not a device: only the exact reserved stems are.
+  ['console.exe', 'console.exe'],
+  // A name that is nothing but a separator still becomes a plain file name.
+  ['/', '_'],
+]
+for (const [input, expected] of fileNames) {
+  const actual = safeDownloadFileName(input)
+  if (actual !== expected) {
+    throw new Error('safeDownloadFileName(' + JSON.stringify(input) + ') = '
+      + JSON.stringify(actual) + ', expected ' + JSON.stringify(expected))
+  }
+}
+for (const rejected of ['', '.', '..', '...', '   ']) {
+  let threw = false
+  try { safeDownloadFileName(rejected) } catch { threw = true }
+  if (!threw) throw new Error('safeDownloadFileName accepted ' + JSON.stringify(rejected))
+}
+console.log('✓ a feed-supplied installer name cannot name anything but a file in the download directory')
 
 // Release notes reach three surfaces: two HTML cards and one native dialog.
 const notesBundle = join(work, 'release-notes.mjs')

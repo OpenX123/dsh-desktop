@@ -35,8 +35,14 @@ await esbuild.build({
   format: 'esm',
   outfile,
 })
-const { executableCandidates, normalizePathEntry, spawnTargetFor, parseVersionOutput, npxCacheRoot } =
-  await import(pathToFileURL(outfile).href)
+const {
+  executableCandidates,
+  isSameDirectory,
+  normalizePathEntry,
+  spawnTargetFor,
+  parseVersionOutput,
+  npxCacheRoot,
+} = await import(pathToFileURL(outfile).href)
 
 const failures = []
 const check = (name, ok, detail) => {
@@ -68,6 +74,29 @@ equal('an unquoted entry is untouched', normalizePathEntry('/opt/homebrew/bin'),
 equal('an empty entry stays empty', normalizePathEntry('   '), '')
 // Only a matched surrounding pair is removed; a stray quote is part of the name.
 equal('an unbalanced quote is left alone', normalizePathEntry('"C:\\tools'), '"C:\\tools')
+
+// The client's node shim directory is excluded from every PATH lookup. Each
+// spelling below is a way a user-written PATH entry names that same directory
+// while differing from the client's own `join()` output — and a miss returns
+// the shim as a "user-installed" Node.
+console.log('\n# isSameDirectory')
+const shim = 'C:\\Users\\a\\.dsh-desktop\\bin'
+check('Windows ignores case', isSameDirectory('c:\\users\\a\\.dsh-desktop\\BIN', shim, 'win32'))
+check('Windows accepts forward slashes', isSameDirectory('C:/Users/a/.dsh-desktop/bin', shim, 'win32'))
+check('Windows ignores a trailing separator', isSameDirectory(shim + '\\', shim, 'win32'))
+check('Windows ignores a trailing forward slash', isSameDirectory('C:/Users/a/.dsh-desktop/bin/', shim, 'win32'))
+check('Windows still separates different directories',
+  !isSameDirectory('C:\\Users\\a\\.dsh-desktop\\bin2', shim, 'win32'))
+check('Windows keeps a root from collapsing into a drive-relative path',
+  isSameDirectory('C:\\', 'c:/', 'win32'))
+const posixShim = '/Users/a/.dsh-desktop/bin'
+check('POSIX ignores a trailing separator', isSameDirectory(posixShim + '/', posixShim, 'darwin'))
+// A POSIX filesystem may hold both spellings as different directories, so the
+// case fold must NOT travel off Windows.
+check('POSIX stays case-sensitive', !isSameDirectory('/Users/a/.dsh-desktop/BIN', posixShim, 'darwin'))
+check('POSIX does not treat a backslash as a separator',
+  !isSameDirectory('/Users/a/.dsh-desktop\\bin', posixShim, 'linux'))
+check('POSIX keeps the root', isSameDirectory('/', '/', 'linux'))
 
 console.log('\n# spawnTargetFor')
 const cmd = spawnTargetFor('C:\\Users\\a b\\AppData\\npm\\dsh.cmd', 'win32')
