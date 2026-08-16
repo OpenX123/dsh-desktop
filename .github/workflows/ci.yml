@@ -47,3 +47,57 @@ jobs:
 
       - name: 构建 / Build
         run: pnpm run build
+
+  package-windows:
+    name: 构建 Windows 安装包 / Package Windows installer
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 检出源码 / Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 安装 pnpm / Setup pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+
+      - name: 安装 Node.js / Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖 / Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 生成 Windows NSIS 安装包 / Build Windows NSIS installer
+        run: pnpm run dist
+        env:
+          DSH_RUNTIME_TARGET: win32-x64
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: 验证打包后运行时 / Smoke packaged runtime
+        run: pnpm run smoke:package
+
+      - name: 验证安装结果 / Smoke installed application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path release -File -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw 'NSIS installer not found under release/' }
+          $installDir = Join-Path $env:RUNNER_TEMP ('dsh-desktop-nsis-' + [guid]::NewGuid().ToString('N'))
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "NSIS installer exited with code $($install.ExitCode)" }
+          $executable = Join-Path $installDir 'DeepSeek Harness Desktop.exe'
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Installed executable not found: $executable" }
+          node scripts/smoke-package.mjs "$executable"
+          if ($LASTEXITCODE -ne 0) { throw "Installed NSIS runtime smoke failed with code $LASTEXITCODE" }
+
+      - name: 上传 Windows 安装包 / Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dsh-desktop-windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: release/*.exe
