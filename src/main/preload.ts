@@ -15,6 +15,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import { providerLogo } from './provider-logos.ts'
 import { releaseNotesCss, renderReleaseNotes } from './release-notes.ts'
 
 /** Connection facts mirrored from the main process. */
@@ -300,16 +301,48 @@ function watchPageTheme(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Enhanced-features card inside the OFFICIAL settings dialog.
-//
-// The official UI is a black box: we never modify its DOM, only APPEND one
-// clearly-marked card when its settings dialog is open. Detection is
-// heuristic (ARIA dialog / modal-like container mentioning 设置); when it
-// fails the card is simply absent — official behavior is never affected.
+// Small desktop affordances around the OFFICIAL web UI. The official UI is a
+// black box, so every adapter is optional, DOM-only and safe to skip when its
+// expected seat is absent.
 // ---------------------------------------------------------------------------
 
 const ENHANCE_ID = 'dsh-desktop-enhance'
 const UPDATE_ID = 'dsh-desktop-update'
+const MORE_SETTINGS_ID = 'dsh-desktop-more-settings'
+const PET_SETTING_ID = 'dsh-desktop-pet-setting'
+const PET_VISIBILITY_STYLE_ID = 'dsh-desktop-pet-visibility'
+const PET_VISIBILITY_KEY = 'dsh-desktop:harness-pet-visible'
+const INTERFACE_POLISH_ID = 'dsh-desktop-interface-polish'
+const FOLDED_SETTINGS = new Set(['自定义提示词', '第三方模型思考强度', 'WSL 后端', '识图插件（view_image）'])
+const SETTINGS_NAV_ICON_PATHS: Record<string, string> = {
+  归档管理: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
+  插件市场: '<path d="m2 7 2-4h16l2 4M5 13v8M19 13v8M4 21h16"/><path d="M2 7a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 2 0"/><path d="M8 21v-5h8v5"/>',
+  更多: '<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>',
+  小鲸鱼: '<path d="M3 13c1.5-3.7 4.4-5.5 8.3-5.5 3 0 5.3 1 6.8 3 .7 1 1 2 .8 3-1.2 2.7-4.1 3.8-7.9 3.8-3.5 0-6.1-1.1-6.8-3.4-.2-.9.1-1.9.8-2.6"/><path d="M18 10c1.6-.2 2.5-1.2 2.7-3 1.2.5 2 1.4 2.1 2.7"/><circle cx="13" cy="11" r=".9" fill="currentColor" stroke="none"/>',
+  自定义提示词: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 8h8M8 12h5"/>',
+  第三方模型思考强度: '<path d="M9.5 4A3.5 3.5 0 0 0 6 7.5c0 .4.1.8.2 1.1A3.5 3.5 0 0 0 7.5 15H9v4a2 2 0 0 0 4 0V5.5A3.5 3.5 0 0 0 9.5 2 3.4 3.4 0 0 0 7 3"/><path d="M14.5 4A3.5 3.5 0 0 1 18 7.5c0 .4-.1.8-.2 1.1A3.5 3.5 0 0 1 16.5 15H15M9 10H7M15 8h2M9 15H7"/>',
+  'WSL 后端': '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/>',
+  '识图插件（view_image）': '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  侧边卡片: '<rect width="20" height="18" x="2" y="3" rx="2"/><path d="M15 3v18M18 8h-1M18 12h-1"/>',
+}
+const CHINESE_PROVIDER_PREFIXES = ['ant-ling', 'deepseek', 'kimi', 'minimax', 'moonshotai', 'qwen', 'xiaomi', 'zai']
+const PROVIDER_NAMES: Record<string, string> = {
+  'ant-ling': 'Ant Ling',
+  deepseek: 'DeepSeek',
+  'kimi-coding': 'Kimi Coding',
+  minimax: 'MiniMax',
+  'minimax-cn': 'MiniMax CN',
+  moonshotai: 'Moonshot AI',
+  'moonshotai-cn': 'Moonshot AI CN',
+  'qwen-token-plan': 'Qwen Token Plan',
+  'qwen-token-plan-cn': 'Qwen Token Plan CN',
+  xiaomi: 'Xiaomi MiMo',
+  'xiaomi-token-plan-ams': 'Xiaomi Plan AMS',
+  'xiaomi-token-plan-cn': 'Xiaomi Plan CN',
+  'xiaomi-token-plan-sgp': 'Xiaomi Plan SGP',
+  zai: 'Z.AI',
+  'zai-coding-cn': 'Z.AI Coding CN',
+}
 const RELEASES_PAGE_URL = 'https://github.com/bruc3van/dsh-desktop/releases'
 
 /**
@@ -342,6 +375,436 @@ function findSettingsDialog(): Element | null {
     if (text.includes('设置') && text.length < 6000) return el
   }
   return null
+}
+
+/** Soften the optional workbench's shared tab strips and workspace explorer. */
+function injectInterfacePolish(): void {
+  if (document.getElementById(INTERFACE_POLISH_ID) !== null) return
+  const style = document.createElement('style')
+  style.id = INTERFACE_POLISH_ID
+  style.textContent = [
+    '[role="presentation"]:has(>[role="dialog"]),[role="presentation"]:has(>[role="dialog"])>[class*="_mask"]'
+      + '{background:transparent!important;backdrop-filter:none!important}',
+    '[class*="_pane"]>[class*="_tabBar"]{box-sizing:border-box;height:40px!important;padding:4px 6px!important;'
+      + 'align-items:center!important;background:transparent!important;border-bottom-color:var(--dsw-alias-border-l1)!important}',
+    '[class*="_pane"]>[class*="_tabBar"] [class*="_tabList"]{align-items:center;gap:4px}',
+    '[class*="_tabList"]>div[draggable="true"]{height:28px;border-right:0!important;border-radius:8px;'
+      + 'padding:0 6px 0 8px!important;transition:background .15s ease,color .15s ease,box-shadow .15s ease}',
+    '[class*="_tabList"]>div[draggable="true"][class*="_tabActive"]{background:var(--dsw-alias-bg-layer-2)!important;'
+      + 'box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}',
+    '[class*="_tabBarPlus"]{margin:0 2px!important;background:transparent!important;border-radius:8px!important}',
+    '[class*="_bottomClose"]{top:6px!important}',
+    '[class*="_explorerBody"]{box-sizing:border-box;margin:4px 8px 8px;padding:4px!important;'
+      + 'border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}',
+    '[class*="_explorerRow"]{height:36px!important;border-radius:10px!important;padding-right:10px!important}',
+    '[class*="_grid"]:has(>[class*="_card"] [class*="_cardMain"])>[class*="_card"]{border:0!important;box-shadow:none!important}',
+    '[class*="_browserBar"]>[class*="_iconButton"]:last-child{width:24px!important;height:24px!important}',
+    '.dsh-provider-native{display:none!important}',
+    '.dsh-provider-picker{display:grid;width:100%;gap:8px}',
+    '.dsh-provider-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;'
+      + 'font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary)}',
+    '.dsh-provider-heading small{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary)}',
+    '.dsh-provider-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}',
+    '.dsh-provider-option{box-sizing:border-box;display:flex;align-items:center;gap:8px;min-width:0;min-height:52px;'
+      + 'padding:7px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;'
+      + 'background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;'
+      + 'transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out),'
+      + 'border-color var(--ds-transition-duration-slow) var(--ds-ease-in-out)}',
+    '.dsh-provider-option:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}',
+    '.dsh-provider-option[aria-pressed="true"]{background:var(--dsw-alias-interactive-bg-active);'
+      + 'border-color:var(--dsw-alias-interactive-bg-hover-accent)}',
+    '.dsh-provider-option:focus-visible,.dsh-provider-more>summary:focus-visible{outline:2px solid '
+      + 'var(--dsw-alias-interactive-bg-hover-accent);outline-offset:2px}',
+    '.dsh-provider-logo{display:grid;place-items:center;flex:none;width:30px;height:30px;'
+      + 'border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:#fff}',
+    '.dsh-provider-logo svg{display:block;width:21px;height:21px}',
+    '.dsh-provider-copy{display:grid;min-width:0;gap:1px;flex:1}',
+    '.dsh-provider-copy strong{overflow:hidden;font:var(--dsw-font-xxs-strong-12);text-overflow:ellipsis;white-space:nowrap}',
+    '.dsh-provider-copy small{overflow:hidden;color:var(--dsw-alias-label-tertiary);'
+      + 'font:var(--dsw-font-xxxs-11);text-overflow:ellipsis;white-space:nowrap}',
+    '.dsh-provider-check{display:grid;place-items:center;flex:none;width:16px;height:16px;opacity:0;'
+      + 'color:var(--dsw-alias-brand-primary)}',
+    '.dsh-provider-option[aria-pressed="true"] .dsh-provider-check{opacity:1}',
+    '.dsh-provider-check svg{width:14px;height:14px}',
+    '.dsh-provider-more{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;'
+      + 'background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
+    '.dsh-provider-more>summary{box-sizing:border-box;display:flex;align-items:center;gap:8px;min-height:44px;'
+      + 'padding:0 12px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxs-strong-12);'
+      + 'cursor:pointer;list-style:none}',
+    '.dsh-provider-more>summary::-webkit-details-marker{display:none}',
+    '.dsh-provider-more>summary:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+    '.dsh-provider-more-count{margin-left:auto;padding:1px 7px;border-radius:999px;'
+      + 'background:var(--dsw-alias-interactive-bg-hover);font:var(--dsw-font-xxxs-11)}',
+    '.dsh-provider-chevron{display:grid;place-items:center;'
+      + 'transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out)}',
+    '.dsh-provider-chevron svg{width:14px;height:14px}',
+    '.dsh-provider-more[open] .dsh-provider-chevron{transform:rotate(180deg)}',
+    '.dsh-provider-more .dsh-provider-grid{padding:0 8px 8px}',
+    '.dsh-provider-option-secondary{min-height:44px}',
+    '.dsh-provider-option-secondary .dsh-provider-copy small{display:none}',
+    '#dsh-desktop-pet-setting .dsh-pet-switch{box-sizing:border-box;display:block;flex:none;width:30px;height:18px;'
+      + 'margin-left:auto;padding:2px;border-radius:999px;background:var(--dsw-alias-border-l2,#d8d8d4);'
+      + 'transition:background .15s ease}',
+    '#dsh-desktop-pet-setting .dsh-pet-switch::after{display:block;width:14px;height:14px;border-radius:50%;'
+      + 'background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 1px 2px rgba(0,0,0,.2);content:"";'
+      + 'transition:transform .15s ease}',
+    '#dsh-desktop-pet-setting[aria-checked="true"] .dsh-pet-switch{background:var(--dsw-alias-brand-primary,#0f1115)}',
+    '#dsh-desktop-pet-setting[aria-checked="true"] .dsh-pet-switch::after{transform:translateX(12px)}',
+    '#dsh-desktop-pet-setting:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:2px}',
+    '.zat-sid{display:none!important}',
+    '.dsh-session-tabs{display:flex;gap:4px;padding-bottom:8px;border-bottom:1px solid var(--dsw-alias-border-l1)}',
+    '.dsh-session-tab{min-height:44px;padding:0 14px;border:0;border-radius:8px;background:transparent;'
+      + 'color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxs-strong-12);cursor:pointer}',
+    '.dsh-session-tab:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+    '.dsh-session-tab[aria-selected="true"]{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-primary)}',
+    '.dsh-session-tab:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:2px}',
+    '.zat-cols.dsh-session-enhanced{grid-template-columns:minmax(0,1fr)!important}',
+    '.zat-cols.dsh-session-enhanced>.zat-col .zat-colhead{display:none}',
+    '.zat-cols.dsh-session-enhanced>.zat-col[hidden]{display:none!important}',
+    '@media (max-width:720px){.dsh-provider-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+    '@media (prefers-reduced-motion:reduce){[class*="_tabList"]>div[draggable="true"],'
+      + '.dsh-provider-option,.dsh-provider-chevron,#dsh-desktop-pet-setting .dsh-pet-switch,'
+      + '#dsh-desktop-pet-setting .dsh-pet-switch::after{transition:none}}',
+  ].join('')
+  document.head.appendChild(style)
+}
+
+/** Keep the four optional desktop-plugin pages behind one compact nav row. */
+function foldExtraSettings(): void {
+  const nav = findSettingsDialog()?.querySelector('[class*="navList"]')
+  if (nav === undefined || nav === null || nav.querySelector('#' + MORE_SETTINGS_ID) !== null) return
+  const items = [...nav.children].filter(item => FOLDED_SETTINGS.has(item.textContent?.trim() ?? '')) as HTMLElement[]
+  const first = items[0]
+  if (first === undefined) return
+
+  const more = first.cloneNode(true) as HTMLButtonElement
+  more.id = MORE_SETTINGS_ID
+  more.removeAttribute('aria-current')
+  const label = more.querySelector('[class*="navLabel"]')
+  if (label === null) return
+  label.textContent = '更多'
+  const activeClass = [...(nav.querySelector('[aria-current="true"]')?.classList ?? [])]
+    .find(name => name.toLowerCase().includes('active'))
+  let open = false
+  const paint = (): void => {
+    for (const item of items) item.style.display = open ? '' : 'none'
+    more.setAttribute('aria-expanded', String(open))
+    if (activeClass !== undefined) {
+      more.classList.toggle(activeClass, !open && items.some(item => item.getAttribute('aria-current') === 'true'))
+    }
+  }
+  more.addEventListener('click', () => {
+    open = !open
+    paint()
+  })
+  nav.append(more, ...items)
+  paint()
+}
+
+function petVisible(): boolean {
+  return document.documentElement.hasAttribute('data-dsh-pet-visible')
+}
+
+function storedPetVisible(): boolean {
+  try {
+    return localStorage.getItem(PET_VISIBILITY_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function setPetVisible(visible: boolean): void {
+  document.documentElement.toggleAttribute('data-dsh-pet-visible', visible)
+  try {
+    localStorage.setItem(PET_VISIBILITY_KEY, String(visible))
+  } catch { /* remote origins can deny storage; the current view still updates */ }
+}
+
+/** Hide the optional Harness Pet before it mounts, without patching its package. */
+function injectPetVisibilityGuard(): void {
+  if (document.documentElement === null) {
+    document.addEventListener('readystatechange', injectPetVisibilityGuard, { once: true })
+    return
+  }
+  setPetVisible(storedPetVisible())
+  if (document.getElementById(PET_VISIBILITY_STYLE_ID) !== null) return
+  const style = document.createElement('style')
+  style.id = PET_VISIBILITY_STYLE_ID
+  style.textContent = 'html:not([data-dsh-pet-visible]) #harness-pet-root{display:none!important}'
+  ;(document.head ?? document.documentElement).appendChild(style)
+}
+
+/** Add one persisted whale switch under the existing More disclosure. */
+function injectPetSetting(): void {
+  if (document.getElementById('harness-pet-root') === null) return
+  const more = document.getElementById(MORE_SETTINGS_ID) as HTMLButtonElement | null
+  if (more === null || document.getElementById(PET_SETTING_ID) !== null) return
+  const item = more.cloneNode(true) as HTMLButtonElement
+  item.id = PET_SETTING_ID
+  item.type = 'button'
+  item.setAttribute('role', 'switch')
+  item.removeAttribute('aria-current')
+  item.removeAttribute('aria-expanded')
+  const label = item.querySelector('[class*="navLabel"]')
+  if (label === null) return
+  label.textContent = '小鲸鱼'
+  const toggle = document.createElement('span')
+  toggle.className = 'dsh-pet-switch'
+  toggle.setAttribute('aria-hidden', 'true')
+  item.append(toggle)
+  const paint = (): void => {
+    const visible = petVisible()
+    item.setAttribute('aria-checked', String(visible))
+    item.setAttribute('aria-label', visible ? '隐藏小鲸鱼' : '显示小鲸鱼')
+    item.style.display = more.getAttribute('aria-expanded') === 'true' ? '' : 'none'
+  }
+  item.addEventListener('click', () => {
+    setPetVisible(!petVisible())
+    paint()
+  })
+  more.addEventListener('click', paint)
+  more.after(item)
+  paint()
+}
+
+function settingsNavIcon(name: string, className: string): SVGSVGElement | null {
+  const paths = SETTINGS_NAV_ICON_PATHS[name]
+  if (paths === undefined) return null
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  icon.setAttribute('width', '16')
+  icon.setAttribute('height', '16')
+  icon.setAttribute('viewBox', '0 0 24 24')
+  icon.setAttribute('fill', 'none')
+  icon.setAttribute('stroke', 'currentColor')
+  icon.setAttribute('stroke-width', '2')
+  icon.setAttribute('stroke-linecap', 'round')
+  icon.setAttribute('stroke-linejoin', 'round')
+  icon.setAttribute('aria-hidden', 'true')
+  icon.className.baseVal = className
+  icon.dataset.dshNavIcon = name
+  icon.innerHTML = paths
+  return icon
+}
+
+/** Give every desktop-added settings page its own semantic vector icon. */
+function polishSettingsNavigation(): void {
+  const nav = findSettingsDialog()?.querySelector('[class*="navList"]')
+  if (nav === undefined || nav === null) return
+  for (const item of nav.children) {
+    const label = item.querySelector('[class*="navLabel"]')
+    if (label === null) continue
+    let name = (label.textContent ?? '').replace(/^[^\p{L}\p{N}]+/u, '').trim()
+    if (name === '对话管理') {
+      name = '归档管理'
+      label.textContent = name
+    }
+    const current = item.querySelector('svg') as SVGSVGElement | null
+    if (current?.dataset.dshNavIcon === name) continue
+    const icon = settingsNavIcon(name, current?.getAttribute('class') ?? '')
+    if (icon !== null) current?.replaceWith(icon)
+  }
+}
+
+/** Turn the plugin's two-column session dump into an archive-first tab view. */
+function polishSessionManager(): void {
+  const dialog = findSettingsDialog()
+  if (dialog === null) return
+  const panel = [...dialog.querySelectorAll('.zat-panel')].find(item =>
+    [...item.querySelectorAll('.zat-colhead')].some(head => /归档管理|Archived/.test(head.textContent ?? '')))
+  if (panel === undefined) return
+
+  const title = panel.querySelector('.zat-title')
+  if (title?.firstChild !== null && title?.firstChild !== undefined) title.firstChild.textContent = '归档管理'
+  for (const sessionTitle of panel.querySelectorAll('.zat-stitle')) sessionTitle.removeAttribute('title')
+
+  const columns = [...panel.querySelectorAll<HTMLElement>('.zat-cols > .zat-col')]
+  if (columns.length < 2) return
+  const archived = columns.find(column => /归档管理|Archived/.test(column.querySelector('.zat-colhead')?.textContent ?? '')) ?? columns[1]
+  const active = columns.find(column => column !== archived) ?? columns[0]
+  if (archived === undefined || active === undefined) return
+  const cols = archived.parentElement
+  if (cols === null) return
+  cols.classList.add('dsh-session-enhanced')
+  archived.id = 'dsh-session-archived-panel'
+  active.id = 'dsh-session-active-panel'
+  archived.setAttribute('role', 'tabpanel')
+  active.setAttribute('role', 'tabpanel')
+
+  let tabs = panel.querySelector<HTMLElement>('.dsh-session-tabs')
+  if (tabs === null) {
+    const newTabs = document.createElement('div')
+    newTabs.className = 'dsh-session-tabs'
+    newTabs.setAttribute('role', 'tablist')
+    newTabs.setAttribute('aria-label', '会话列表')
+    const definitions: Array<[string, string, string]> = [
+      ['archived', '归档列表', archived.id],
+      ['active', '进行中', active.id],
+    ]
+    for (const [key, label, controls] of definitions) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'dsh-session-tab'
+      button.dataset.sessionTab = key
+      button.setAttribute('role', 'tab')
+      button.setAttribute('aria-controls', controls)
+      button.textContent = label
+      newTabs.append(button)
+    }
+    newTabs.dataset.selected = 'archived'
+    newTabs.addEventListener('click', event => {
+      const button = (event.target as Element).closest<HTMLButtonElement>('[data-session-tab]')
+      if (button === null) return
+      newTabs.dataset.selected = button.dataset.sessionTab
+      polishSessionManager()
+    })
+    newTabs.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      event.preventDefault()
+      newTabs.dataset.selected = newTabs.dataset.selected === 'archived' ? 'active' : 'archived'
+      polishSessionManager()
+      newTabs.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus()
+    })
+    cols.before(newTabs)
+    tabs = newTabs
+  }
+
+  const selected = tabs.dataset.selected ?? 'archived'
+  for (const button of tabs.querySelectorAll<HTMLButtonElement>('[data-session-tab]')) {
+    const on = button.dataset.sessionTab === selected
+    button.setAttribute('aria-selected', String(on))
+    button.tabIndex = on ? 0 : -1
+  }
+  archived.hidden = selected !== 'archived'
+  active.hidden = selected !== 'active'
+}
+
+function isChineseProvider(value: string): boolean {
+  return CHINESE_PROVIDER_PREFIXES.some(prefix => value === prefix || value.startsWith(prefix + '-'))
+}
+
+function providerOrder(a: HTMLOptionElement, b: HTMLOptionElement): number {
+  if (a.value === 'deepseek') return -1
+  if (b.value === 'deepseek') return 1
+  return Number(isChineseProvider(b.value)) - Number(isChineseProvider(a.value))
+    || a.value.localeCompare(b.value, 'en')
+}
+
+function paintProviderPicker(picker: Element, value: string): void {
+  for (const option of picker.querySelectorAll<HTMLButtonElement>('[data-provider-value]')) {
+    option.setAttribute('aria-pressed', String(option.dataset.providerValue === value))
+  }
+}
+
+function providerButton(option: HTMLOptionElement, select: HTMLSelectElement, picker: Element): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'dsh-provider-option'
+  button.dataset.providerValue = option.value
+  button.disabled = option.disabled
+  button.title = option.value
+  button.setAttribute('aria-label', (PROVIDER_NAMES[option.value] ?? option.textContent) + ' (' + option.value + ')')
+
+  const logo = providerLogo(option.value)
+  if (logo !== undefined) {
+    const icon = document.createElement('span')
+    icon.className = 'dsh-provider-logo'
+    icon.innerHTML = logo
+    button.append(icon)
+  } else {
+    button.classList.add('dsh-provider-option-secondary')
+  }
+
+  const copy = document.createElement('span')
+  copy.className = 'dsh-provider-copy'
+  const name = document.createElement('strong')
+  name.textContent = PROVIDER_NAMES[option.value] ?? option.textContent
+  const id = document.createElement('small')
+  id.textContent = option.value
+  copy.append(name, id)
+
+  const check = document.createElement('span')
+  check.className = 'dsh-provider-check'
+  check.setAttribute('aria-hidden', 'true')
+  check.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"'
+    + ' stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>'
+  button.append(copy, check)
+  button.addEventListener('click', () => {
+    select.value = option.value
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    paintProviderPicker(picker, option.value)
+  })
+  return button
+}
+
+/** Chinese providers are primary logo cards; everything else stays behind native disclosure. */
+function enhanceProviderOptions(): void {
+  const dialog = findSettingsDialog()
+  if (dialog === null) return
+  for (const element of dialog.querySelectorAll('select')) {
+    const select = element as HTMLSelectElement
+    if (!/^(提供方|Provider)$/i.test(select.getAttribute('aria-label') ?? '')) continue
+    const field = select.parentElement
+    if (field === null) continue
+    const card = select.closest<HTMLElement>('[class*="_addCard"]')
+    if (card !== null && card.dataset.dshProviderDefault !== 'true' && select.getClientRects().length > 0
+      && [...select.options].some(option => option.value === 'deepseek')) {
+      card.dataset.dshProviderDefault = 'true'
+      select.value = 'deepseek'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    const existing = field.querySelector(':scope > .dsh-provider-picker')
+    if (select.dataset.dshProviderPicker === 'true' && existing !== null) {
+      paintProviderPicker(existing, select.value)
+      continue
+    }
+    existing?.remove()
+
+    const sorted = [...select.options].filter(option => option.value !== '').sort(providerOrder)
+    for (const option of sorted) select.append(option)
+    select.dataset.dshProviderPicker = 'true'
+    select.classList.add('dsh-provider-native')
+    select.setAttribute('aria-hidden', 'true')
+    select.tabIndex = -1
+
+    const english = select.getAttribute('aria-label') === 'Provider'
+    const picker = document.createElement('div')
+    picker.className = 'dsh-provider-picker'
+    const heading = document.createElement('div')
+    heading.className = 'dsh-provider-heading'
+    heading.append(english ? 'China providers' : '中国模型服务')
+    const hint = document.createElement('small')
+    hint.textContent = english ? 'Recommended first' : '优先显示'
+    heading.append(hint)
+
+    const primary = document.createElement('div')
+    primary.className = 'dsh-provider-grid'
+    for (const option of sorted.filter(item => isChineseProvider(item.value))) {
+      primary.append(providerButton(option, select, picker))
+    }
+
+    const secondary = sorted.filter(item => !isChineseProvider(item.value))
+    const more = document.createElement('details')
+    more.className = 'dsh-provider-more'
+    const summary = document.createElement('summary')
+    summary.append(english ? 'More providers' : '更多提供方')
+    const count = document.createElement('span')
+    count.className = 'dsh-provider-more-count'
+    count.textContent = String(secondary.length)
+    const chevron = document.createElement('span')
+    chevron.className = 'dsh-provider-chevron'
+    chevron.setAttribute('aria-hidden', 'true')
+    chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+      + ' stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
+    summary.append(count, chevron)
+    const secondaryGrid = document.createElement('div')
+    secondaryGrid.className = 'dsh-provider-grid'
+    for (const option of secondary) secondaryGrid.append(providerButton(option, select, picker))
+    more.append(summary, secondaryGrid)
+
+    picker.append(heading, primary, more)
+    select.after(picker)
+    paintProviderPicker(picker, select.value)
+  }
 }
 
 /** The settings dialog's form-flow container (the nav's content column). */
@@ -871,8 +1334,30 @@ let watching = false
 function watchSettingsDialog(): void {
   if (watching) return
   watching = true
+  document.addEventListener('click', (event) => {
+    const label = (event.target as Element).closest('button')?.textContent?.trim() ?? ''
+    if (!/^(添加提供方|Add provider)$/i.test(label)) return
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const select = [...(findSettingsDialog()?.querySelectorAll<HTMLSelectElement>('select') ?? [])]
+        .find(item => /^(提供方|Provider)$/i.test(item.getAttribute('aria-label') ?? ''))
+      if (select === undefined || ![...select.options].some(option => option.value === 'deepseek')) return
+      select.value = 'deepseek'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      const picker = select.parentElement?.querySelector(':scope > .dsh-provider-picker')
+      if (picker !== null && picker !== undefined) paintProviderPicker(picker, select.value)
+    }))
+  })
   const probe = (): void => {
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[class*="_sandboxAction"]')) {
+      if (button.textContent === '临时解锁（不安全）') button.textContent = '临时解锁'
+      if (button.textContent === 'Temporarily disable (unsafe)') button.textContent = 'Temporarily disable'
+    }
     injectKeyHelp()
+    foldExtraSettings()
+    injectPetSetting()
+    polishSettingsNavigation()
+    polishSessionManager()
+    enhanceProviderOptions()
     // The block belongs to the general tab's panel only. React does not always
     // replace that panel on a tab switch, so an injection that is never
     // withdrawn leaks the card onto another tab (where it reads as a misplaced
@@ -929,12 +1414,16 @@ function isChineseGeneralTab(): boolean {
   return isGeneralTab(dialog) && !/General/i.test(dialog.querySelector('[class*="navList"]')?.querySelector('[class*="active"]')?.textContent ?? '')
 }
 
+injectPetVisibilityGuard()
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
+    injectInterfacePolish()
     watchPageTheme()
     watchSettingsDialog()
   }, { once: true })
 } else {
+  injectInterfacePolish()
   watchPageTheme()
   watchSettingsDialog()
 }
