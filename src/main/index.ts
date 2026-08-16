@@ -36,8 +36,10 @@ import {
   type UpdateInfo,
   type UpdateState,
 } from './updater.ts'
-import { abandonBundledPlugin, BUNDLED_PLUGIN_NAME, seatBundledPlugin, withdrawBundledPlugin } from './bundled-plugin.ts'
+import { abandonBundledPlugin, BUNDLED_PLUGIN_NAME, seatBundledPlugin, WEB_PROFILE, withdrawBundledPlugin } from './bundled-plugin.ts'
 import { releaseNotesCss, renderReleaseNotes, renderReleaseNotesText } from './release-notes.ts'
+import { clearRuntimeLock, isProcessAlive, readRuntimeLock, recordRuntimeLockUrl, writeRuntimeLock } from './runtime-lock.ts'
+import { webProbeOrigins } from './web-discovery.ts'
 import {
   executableCandidates,
   isSameDirectory,
@@ -881,10 +883,20 @@ class WebUiManager {
     let exitReported = false
     let readinessProbeStarted = false
 
+    // Recorded before readiness, not after: a client killed during the child's
+    // boot still has to leave the pid behind for the next start to reap.
+    if (child.pid !== undefined) {
+      writeRuntimeLock(childHome(), { childPid: child.pid, desktopPid: process.pid, startedAt: Date.now() })
+    }
+
     const reportExit = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (exitReported) return
       exitReported = true
       if (this.generation === gen) this.generation = undefined
+      // Every way this child ends passes through here, so the record never
+      // outlives it — except the one case it exists for, where this process is
+      // gone and nothing runs at all.
+      clearRuntimeLock(childHome())
       this.onExit({ wasReady: gen.readyReported, code, signal, retryable: true })
     }
 
@@ -1002,6 +1014,15 @@ const STABLE_RUNTIME_RESET_MS = 60_000
 let launchBudget = MAX_LAUNCH_RETRIES
 let launchBudgetResetTimer: NodeJS.Timeout | undefined
 let quitting = false
+/**
+ * Set from the moment a Windows installer is about to be handed this process
+ * tree until the client exits. The relaunch ladder must not fire in that
+ * window: the runtime was stopped on purpose, and a child respawned 250ms
+ * later is precisely the orphan the stop exists to prevent — the installer
+ * kills this app by name, which does not match a `node.exe` runtime child.
+ * Cleared only when the installer turns out not to have started at all.
+ */
+let installerHandoff = false
 /** Monotonic connection intent; stale probes/readiness callbacks cannot win. */
 let connectionGeneration = 0
 /** Avoid concurrent health probes and reload loops after sleep/wake churn. */
@@ -1026,6 +1047,27 @@ function relaunchDelayMs(remainingRetries: number): number {
  */
 function defaultWebProbeUrl(): string {
   return devOverride('DSH_DESKTOP_PROBE_URL') ?? 'http://127.0.0.1:3080'
+}
+
+/** Default origin plus any port the user pinned in the web profile's patch layer. */
+function smartProbeUrls(): string[] {
+  const patch = join(childHome(), 'profiles', WEB_PROFILE, 'cordis.patch.yml')
+  let source: string
+  try {
+    source = readFileSync(patch, 'utf8')
+  } catch {
+    return [defaultWebProbeUrl()]
+  }
+  return webProbeOrigins(defaultWebProbeUrl(), source)
+}
+
+/** The first origin a real harness answers on, or undefined when none does. */
+async function probeSmartTargets(): Promise<string | undefined> {
+  for (const url of smartProbeUrls()) {
+    const answered = await probeWebUi(url)
+    if (answered !== undefined) return answered
+  }
+  return undefined
 }
 
 /** The current Web UI origin: the probed/configured address, or the local child's URL. */
@@ -2167,6 +2209,19 @@ function createDesktopUpdater(): DesktopUpdater {
     loadPersistence: loadUpdatePersistence,
     savePersistence: saveUpdatePersistence,
     dryRun: devFlag('DSH_DESKTOP_UPDATE_DRY_RUN'),
+    // The runtime must not outlive this app into the installer's process
+    // sweep, and must not die before the download that may never succeed.
+    // Both constraints meet at exactly this point in the install.
+    //
+    // Only Windows has that sweep. macOS and Linux open the image and let the
+    // person replace the app themselves, and the ordinary quit path already
+    // stops the runtime — stopping here would leave them with a dead runtime
+    // every time they answer "Later" to the replace prompt.
+    onBeforeInstall: async () => {
+      if (process.platform !== 'win32') return
+      installerHandoff = true
+      await webUi?.stop()
+    },
   })
 }
 
@@ -2491,6 +2546,15 @@ function scheduleQuitAfterWindowsInstall(): void {
 async function installDesktopUpdate(): Promise<{ started: boolean; error?: string }> {
   if (desktopUpdater === undefined) return { started: false, error: 'updater not ready' }
   const result = await desktopUpdater.install()
+  // The installer never ran (a failed spawn, a declined elevation), so nothing
+  // is going to sweep this process tree and nothing is going to quit. Lift the
+  // suppression and give the client its runtime back rather than leaving a
+  // working app with no service behind it.
+  if (!result.started && installerHandoff) {
+    installerHandoff = false
+    console.warn('[desktop] the installer did not start; restoring the local runtime')
+    launchWindow()
+  }
   if (result.started && process.platform === 'darwin' && !devFlag('DSH_DESKTOP_SKIP_UPDATE_PROMPT')) {
     promptMacReplace()
   }
@@ -2784,11 +2848,104 @@ function connectTo(url: string, force = false): void {
 }
 
 /** Use the local `dsh web` child (spawned on demand, awaited via readiness). */
-function startLocalRuntime(generation: number, force = false): void {
+async function startLocalRuntime(generation: number, force = false): Promise<void> {
   if (generation !== connectionGeneration || quitting) return
+  // Never two harnesses on one DSH_HOME. A survivor that still serves is
+  // adopted like any other running instance — including the fallback path, so
+  // this connection is not pinned to it if it later goes away.
+  const survivor = await adoptOrClearSurvivingRuntime()
+  if (generation !== connectionGeneration || quitting) return
+  if (survivor.kind === 'adopt') {
+    configuredTarget = survivor.url
+    probeConnected = true
+    childTarget = undefined
+    launchWindow(generation, force)
+    return
+  }
+  if (survivor.kind === 'blocked') {
+    showConnectionError({
+      kind: 'runtime',
+      headline: '已有 dsh 运行时占用会话数据',
+      detail: '上一次运行留下的 dsh 运行时（PID ' + String(survivor.pid) + '）仍在运行，且既无法连接也无法结束。'
+        + '\n两个运行时同时写入同一份会话数据会造成永久损坏，因此这次没有启动新的运行时。'
+        + '\n请手动结束该进程后重试，或在连接设置中填写它的地址。',
+    })
+    return
+  }
   configuredTarget = undefined
   probeConnected = false
   launchWindow(generation, force)
+}
+
+/**
+ * Terminate a process this client owns but no longer holds a handle to.
+ *
+ * The manager's own stop() waits on its child's 'exit' event; a survivor of a
+ * previous run has no such event to wait for, so liveness is polled instead.
+ * Windows keeps the tree kill for the reason stop() documents: signals cannot
+ * be caught there, and the real server is reachable only by walking down from
+ * a parent that is still alive.
+ */
+async function terminateProcessTree(pid: number): Promise<boolean> {
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { /* already gone */ })
+  } else {
+    try { process.kill(pid, 'SIGTERM') } catch { return !isProcessAlive(pid) }
+  }
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return true
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (process.platform !== 'win32') {
+    try { process.kill(pid, 'SIGKILL') } catch { /* it left on its own */ }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return !isProcessAlive(pid)
+}
+
+/**
+ * Settle with the runtime this client left behind, before starting another.
+ *
+ * `adopt` names an origin to connect to when the survivor still serves — one
+ * harness, sessions shared, which is what the user wanted anyway. `spawn`
+ * means the way is clear. `blocked` means a survivor is still alive and could
+ * not be stopped, and the caller must NOT start a second writer.
+ *
+ * The served origin is what decides, not the pid: a harness that answers is
+ * unambiguously writing DSH_HOME, while a pid that answers nothing is either
+ * gone or wedged past use. Killing a wedged one risks a torn write tail, which
+ * the harness repairs on its next load; spawning beside a live one risks
+ * duplicate seqs and orphan inbox splices, which nothing repairs.
+ */
+type SurvivingRuntime =
+  | { kind: 'spawn' }
+  | { kind: 'adopt'; url: string }
+  | { kind: 'blocked'; pid: number }
+
+async function adoptOrClearSurvivingRuntime(): Promise<SurvivingRuntime> {
+  const home = childHome()
+  const lock = readRuntimeLock(home)
+  if (lock === undefined) return { kind: 'spawn' }
+  // The record describes the child this manager is already running: there is
+  // no survivor here, only ourselves, and adopting it would stop it.
+  if (webUi?.pid() === lock.childPid) return { kind: 'spawn' }
+  if (lock.url !== undefined) {
+    const answered = await probeWebUi(lock.url)
+    if (answered !== undefined) {
+      console.warn('[desktop] adopting the runtime left by a previous run (PID ' + String(lock.childPid) + '): ' + answered)
+      return { kind: 'adopt', url: answered }
+    }
+  }
+  if (isProcessAlive(lock.childPid)) {
+    console.warn('[desktop] a runtime from a previous run (PID ' + String(lock.childPid)
+      + ') is alive but not serving; stopping it rather than writing ' + home + ' beside it')
+    // The record stays on a failed kill. Clearing it would let the next start
+    // spawn beside a writer this one already knows it could not stop.
+    if (!await terminateProcessTree(lock.childPid)) return { kind: 'blocked', pid: lock.childPid }
+  }
+  clearRuntimeLock(home)
+  return { kind: 'spawn' }
 }
 
 /** Start a fresh bounded recovery window for an intentional local selection. */
@@ -2801,6 +2958,9 @@ function resetRuntimeRecoveryBudget(): void {
 /** Restore the retry budget only after one local generation proves stable. */
 function markLocalRuntimeReady(url: string): void {
   childTarget = url
+  // With an origin attached, a survivor of this client can be adopted by the
+  // next start rather than merely detected and killed.
+  recordRuntimeLockUrl(childHome(), url, webUi?.pid())
   // A first-ever DSH_HOME has no web profile until the child creates it
   // during boot, so the pre-spawn offer is a no-op. Take the seat now so
   // the next start actually loads the plugin (this process will not).
@@ -2832,9 +2992,9 @@ function fallbackFromProbedInstance(reason: string): boolean {
   if (installedDshDetection === undefined) {
     updateLoadingStatus('正在检查本机 dsh 运行时…', 'Looking for a dsh runtime on this machine…')
   }
-  void detectInstalledDsh().then(() => {
+  void detectInstalledDsh().then(async () => {
     if (quitting || generation !== connectionGeneration) return
-    startLocalRuntime(generation)
+    await startLocalRuntime(generation)
   })
   return true
 }
@@ -2858,13 +3018,13 @@ function resolveRuntime(force = false): void {
     }
     await detectInstalledDsh()
     if (quitting || generation !== connectionGeneration) return
-    startLocalRuntime(generation, force)
+    await startLocalRuntime(generation, force)
   }
   if (devFlag('DSH_DESKTOP_SKIP_PROBE')) {
     void startLocal()
     return
   }
-  void probeWebUi(defaultWebProbeUrl()).then(async (probed) => {
+  void probeSmartTargets().then(async (probed) => {
     if (quitting || generation !== connectionGeneration) return
     if (probed !== undefined) {
       configuredTarget = probed
@@ -3279,7 +3439,7 @@ function boot(): void {
   webUi = new WebUiManager(
     (line) => { console.log('[dsh web] ' + line) },
     ({ wasReady, code, signal, retryable }) => {
-      if (quitting) return
+      if (quitting || installerHandoff) return
       if (configuredTarget !== undefined) {
         // Connect/probe mode: a child exit is irrelevant (there should be none).
         return

@@ -87,6 +87,18 @@ export interface DesktopUpdaterOptions {
   /** When true, download+verify but do not spawn the installer or quit. */
   dryRun: boolean
   /**
+   * Awaited immediately before the installer is launched, and never earlier.
+   *
+   * The local runtime has to be gone before the installer touches the process
+   * tree: a Windows installer that kills the app by name does not match a
+   * `node.exe` runtime child, which then keeps writing DSH_HOME while the
+   * updated app starts a second harness beside it. But it has to stay alive
+   * through the download and the SHA-256 check above — those take minutes and
+   * routinely fail, and stopping it up front would leave a working app dead
+   * with no update to show for it.
+   */
+  onBeforeInstall?: () => Promise<void>
+  /**
    * The same gate as the shell's `devOverride`: false in a packaged build, so
    * no DSH_* variable in the ambient environment reaches this module. Defaults
    * to false — an updater constructed without an opinion is the strict one.
@@ -508,6 +520,7 @@ export class DesktopUpdater {
       }
 
       this.setPhase('installing')
+      await this.options.onBeforeInstall?.()
       await launchInstaller(destination, this.options.platform)
       if (this.options.platform === 'darwin') {
         this.setPhase('restartRequired')

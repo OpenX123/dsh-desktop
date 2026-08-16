@@ -17,7 +17,7 @@ pnpm run dev
 
 On launch, **Smart mode** picks a runtime in this order:
 
-1. It checks `http://127.0.0.1:3080`. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process.
+1. It checks `http://127.0.0.1:3080`. If an official Web UI is already running there, the desktop client connects to it. The browser and desktop app then share one live Harness process. A `port` set in `~/.dsh/profiles/web/cordis.patch.yml` is probed as well; an instance started with `dsh web --port <port>` leaves nothing outside its command line to find, so point the client at it from connection settings instead.
 2. If nothing answers, it looks for a `dsh` you already installed on PATH (a working `dsh --version` is the whole test).
 3. Then it looks for a copy npx has already cached. **The official instruction, `npx @deepseek-ai/dsh web`, installs nothing onto PATH** — it leaves the complete package in npm's cache (`~/.npm/_npx/` on POSIX, `%LOCALAPPDATA%\npm-cache\_npx\` on Windows). Running it once is enough for the client to reuse it.
 4. Only if none of those exist does it use the pinned official runtime bundled in the installer or project dependencies.

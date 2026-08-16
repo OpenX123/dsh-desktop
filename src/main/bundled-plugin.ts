@@ -37,7 +37,7 @@ import { dirname, join } from 'node:path'
 export const BUNDLED_PLUGIN_NAME = 'dsh-desktop-safe-market'
 
 /** The profile the web GUI boots. */
-const WEB_PROFILE = 'web'
+export const WEB_PROFILE = 'web'
 
 interface ProfileManifest {
   dependencies?: Record<string, string>
